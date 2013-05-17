@@ -1,0 +1,35 @@
+#WHILE::`1` 
+#	DO
+#		IF::ASSERT::1::`3`
+#			`4`
+#			`5`
+#			DO
+#				IF::`7`
+#					IF::`8`		#中文fwefewf
+#						TAG::h1, h2::		`9`
+#						EXIT -10
+#					ELSE
+#						`12`
+#						EXIT -13, "msg exit"
+#					ENDIF
+#				ELSE
+#					`16`
+#				ENDIF
+#			DOWHILE::`abc`
+#		ELSE
+#			IF::`20`
+#				`21`
+#			ENDIF
+#		ENDIF
+#	DOWHILE::`24`
+#ENDWHILE
+#WHILE::`26`
+#	`27`
+#	`28`
+#ENDWHILE
+#`30`
+#EXIT -31
+#SCP_LOCAL_PULL_PUSH :: SSH_HOST_PATH :: "t ":: LOCAL_PWD :: "tdbank" :: LOCAL_PATH :: "/tmp/t.txt" ::  LOCAL_INTF :: "eth1" #:: LOCAL_PORT :: 23 
+
+`ls -l /tmp/` ; `uname`;IF :: `ll`;`uname`;
+ELSE;`who`;ENDIF;`sleep 3`
