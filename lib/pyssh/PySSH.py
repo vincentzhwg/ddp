@@ -5,18 +5,18 @@
 # author: vinczhang
 
 import sys, os
-
-libPath = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'lib')
-sys.path.append( libPath )
-
 import getpass
 import logging, logging.config
 import re
-import pexpect
 import time
 import random
 import ConfigParser
 
+
+libPath = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'lib')
+sys.path.append( libPath )
+
+import pexpect
 import PySSHUtil
 import util
 
@@ -147,9 +147,9 @@ class PySSH:
 		self.timeout = timeout
 		self.needPassword = None
 
-        #标识scp操作方向的标志，None表示未知，需要探测；True表示方向可通；False表示方向不可通
-		self.scpPullFromLocalFlag = None    #ssh机器从操作机拉取的方向
-		self.scpPushFromLocalFlag = None    #从操作机向ssh机器进行推送的方向
+		#标识scp操作方向的标志，None表示未知，需要探测；True表示方向可通；False表示方向不可通
+		self.scpPullFromLocalFlag = None	#ssh机器从操作机拉取的方向
+		self.scpPushFromLocalFlag = None	#从操作机向ssh机器进行推送的方向
 
 	def close(self):
 		try:
@@ -395,6 +395,8 @@ class PySSH:
 		while True:
 			if 10 < tryCounter:
 				logger.error('hostName:%s, test failed, can not create source temp file in local host', self.hostName)
+				# set flag
+				self.scpPushFromLocalFlag = False	
 				return False
 			sourceTempFileName = ''.join( random.sample('abcdefghijklmnopqrstuvwxyz1234567890', 25) )
 			sourceTempFilePath = os.path.join(sourceTempDir, sourceTempFileName)
@@ -425,7 +427,7 @@ class PySSH:
 		if 0 != scpRet['code']:
 			logger.error('hostName:%s, scp push from locat test failed, reason:%s', self.hostName, scpRet['output'])
 			# set flag
-			self.scpPushFromLocalFlag = False
+			self.scpPushFromLocalFlag = False	
 			return False
 		else:
 			logger.info("hostName:%s, scp push from local test success, then delete self temp file, return True", self.hostName)
@@ -737,14 +739,17 @@ class PySSH:
 			logger.info("hostName:%s, get prompt by setting prompt success, prompt:%s", self.hostName, t)
 			return t
 		else:
-			logger.warning("hostName:%s, can not get prompt by setting prompt, then try to get prompt by comparing" % self.hostName)
-			s = self.getPromptByCompare()
-			if s:
-				logger.info("hostName:%s, get prompt by comparing success, prompt:%s", self.hostName, s)
-				return s
-			else:
-				logger.error("hostName:%s, get prompt failed", self.hostName)
-				return ""
+			logger.error("hostName:%s, get prompt failed", self.hostName)
+			return ""
+
+			#logger.warning("hostName:%s, can not get prompt by setting prompt, then try to get prompt by comparing" % self.hostName)
+			#s = self.getPromptByCompare()
+			#if s:
+			#	logger.info("hostName:%s, get prompt by comparing success, prompt:%s", self.hostName, s)
+			#	return s
+			#else:
+			#	logger.error("hostName:%s, get prompt failed", self.hostName)
+			#	return ""
 				
 
 

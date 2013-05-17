@@ -10,10 +10,10 @@ import logging, logging.config
 import warnings
 import re
 import ConfigParser
-import threading
-import time
+import json
 import copy
-from Queue import Queue
+from multiprocessing import Process, Pipe, Value
+
 
 libPath = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'lib')
 sys.path.append( libPath )
@@ -33,20 +33,6 @@ from cmdHostLY import cmdYacc
 from cmdHostLY import hostYacc
 from pyssh.PySSH import PySSH
 
-#不同版本载入不同的包
-pythonVersion = platform.python_version()
-vList = re.split(r'\D*', pythonVersion)
-vList = [int(item) for item in vList]
-if vList[0] >= 3 or (2 == vList[0] and vList[1] >= 6):	#2.6以上版本
-	import json
-	jsonString = json.dumps
-else:							#2.5以下版本
-	import minjson 
-	jsonString = minjson.write
-
-
-
-
 
 
 
@@ -56,6 +42,7 @@ DDP_USED_AS_SCRIPT = False
 DDP_LOGIN_RETRY_TIMES = 3
 #获取sshHomePath的重试次数
 DDP_SSHHOMEPATH_RETRY_TIMES = 5
+
 
 DDP_RUNNING_HOST = 10
 DDP_RETRY_TIMES = 0
@@ -89,10 +76,9 @@ except:
 ################################################################################################################
 
 
-DDP_PRINT_QUEUE = Queue()
-DDP_RESULT_QUEUE = Queue()
-DDP_OPLOG_QUEUE = Queue()
-
+DDP_PRINT_PIPE_RECEIVER, DDP_PRINT_PIPE_SENDER = Pipe(duplex=False)
+DDP_OPLOG_PIPE_RECEIVER, DDP_OPLOG_PIPE_SENDER = Pipe(duplex=False)
+DDP_RESULT_PIPE_RECEIVER, DDP_RESULT_PIPE_SENDER = Pipe(duplex=False)
 
 
 #################################################################################################################
@@ -126,22 +112,21 @@ def stripCommandOutput(outputStr):
 	return retStr
 
 ####################################################################################################################
-class PrintThread(threading.Thread):
+class PrintProcess(Process):
 	def __init__(self):
-		threading.Thread.__init__(self)
-		self.switchFlag = True
-		self.printQueue = DDP_PRINT_QUEUE
-
-	def getPrintQueue(self):
-		return self.printQueue
+		Process.__init__(self)
+		self.switchFlag = Value('i', 1)
+		self.receiver = DDP_PRINT_PIPE_RECEIVER
+		self.sender = DDP_PRINT_PIPE_SENDER
 
 	def turnOff(self):
-		self.switchFlag = False
-		self.printQueue.put(None)		#there must be one more put into printQueue, or print thread may be block forever
+		self.switchFlag.value = 0
+		self.sender.send( None )		#there must be one more put into sender, or print may be block forever
+
 
 	def run(self):
-		while not self.printQueue.empty() or self.switchFlag:
-			tItem = self.printQueue.get()
+		while 1 == self.switchFlag.value or self.receiver.poll():
+			tItem = self.receiver.recv()
 			if tItem is None:
 				continue
 			print ""
@@ -181,29 +166,31 @@ class PrintThread(threading.Thread):
 							print "msg: exec failed, error code:%d, then following N" % tExecRet['code']
 				else:
 					print "msg: %s" % "%%%%%% UNKNOWN CATEGORY %%%%%%"
+		#close connection
+		#self.sender.close()
+		#self.receiver.close()
+		#logger.debug('PrintProcess sender and receiver close')
 					
 
 ######################################################################################################################
-class OPLogWriteThread(threading.Thread):
+class OPLogProcess(Process):
 	def __init__(self, outputFilePath):
-		threading.Thread.__init__(self)
+		Process.__init__(self)
 		self.outputFilePath = outputFilePath
-		self.switchFlag = True
-		self.opLogQueue = DDP_OPLOG_QUEUE
+		self.switchFlag = Value('i', 1)
+		self.receiver = DDP_OPLOG_PIPE_RECEIVER
+		self.sender = DDP_OPLOG_PIPE_SENDER
 
-	def getOPLogQueue(self):
-		return self.opLogQueue
 
 	def turnOff(self):
-		self.switchFlag = False
-		self.opLogQueue.put(None)		#there must be one more put into queue, or thread may be block forever
+		self.switchFlag.value = 0
+		self.sender.send(None)		#there must be one more, or may be block forever
 
-	
 	def run(self):
 		# open file to write
 		wFile = open(self.outputFilePath, 'w')
-		while not self.opLogQueue.empty() or self.switchFlag:
-			tElement = self.opLogQueue.get()
+		while 1 == self.switchFlag.value or self.receiver.poll():
+			tElement = self.receiver.recv()
 			if None is tElement:
 				continue
 			elif isinstance(tElement, str):
@@ -270,21 +257,27 @@ class OPLogWriteThread(threading.Thread):
 			wFile.write('================ END HOST: %s =====================\n\n' % tHost['hostName'])
 			#flush
 			wFile.flush()
+		# close file
 		wFile.close()
 
 
 
 #####################################################################################################################
-class SSHHost(threading.Thread):
-	def __init__(self, host, firstCmdNode, cmdVars=dict(), retryTimes=None):
-		threading.Thread.__init__(self)
+class SSHHost(Process):
+	def __init__(self, host, firstCmdNode, cmdVars=dict(), retryTimes=None, quietMode=False, outputFileQuietMode=True):
+		Process.__init__(self)
 		self.host = copy.deepcopy( host )
 		self.firstCmdNode = firstCmdNode
-		self.setName( self.host['hostName'] )
 
-		self.printQueue = DDP_PRINT_QUEUE
-		self.resultQueue = DDP_RESULT_QUEUE
-		self.opLogQueue = DDP_OPLOG_QUEUE
+		self.quietMode = quietMode
+		self.outputFileQuietMode = outputFileQuietMode
+
+		#set process name
+		self.name = host['hostName']
+
+		self.printSender = DDP_PRINT_PIPE_SENDER
+		self.resultSender = DDP_RESULT_PIPE_SENDER
+		self.opLogSender = DDP_OPLOG_PIPE_SENDER
 
 		self.opLogList = list()
 
@@ -308,7 +301,7 @@ class SSHHost(threading.Thread):
 		else: self.retryTimes = retryTimes		# retry times after error
 		self.retry = list()					# retry error info
 
-		logger.info('thread name:%s, init SSHHost, hostName:%s, user:%s, port:%r, cmdVars:%r', self.getName(), self.host['hostName'], self.host['user'], self.host['port'], self.cmdVars)
+		logger.debug('processName:%s, init SSHHost, hostName:%s, user:%s, port:%r, cmdVars:%r', self.name, self.host['hostName'], self.host['user'], self.host['port'], self.cmdVars)
 
 
 
@@ -317,10 +310,9 @@ class SSHHost(threading.Thread):
 		code:
 			0 : exec success
 			1 : exec faild, but NM (no matter)
-			-7007 : exec success, but assert failed
-			<0 : failed
+			< 0 : failed
 		'''
-		logger.info("threadName:%s, exec cmdNode:%s, cmdVars:%r", self.getName(), cmdNode, self.cmdVars)
+		logger.debug("processName:%s, exec cmdNode:%s, cmdVars:%r", self.name, cmdNode, self.cmdVars)
 		if 'TL' in cmdNode.adjs:
 			tTimeout = cmdNode.adjs['TL']
 		elif 'NTOL' in cmdNode.adjs and True is cmdNode.adjs['NTOL']:
@@ -359,11 +351,11 @@ class SSHHost(threading.Thread):
 		if 0 != execRet['code']:
 			# failed
 			if 'NM' in realAdjs and realAdjs['NM'] is True:
-				logger.warning('threadName:%s, command:%s, execRet:%r', self.getName(), realCommand, execRet)
+				logger.warning('processName:%s, command:%s, execRet:%r', self.name, realCommand, execRet)
 				retDict['code'] = 1
 				retDict['output'] = execRet['output']
 			else:
-				logger.error('threadName:%s, command:%s, execRet:%r', self.getName(), realCommand, execRet)
+				logger.error('processName:%s, command:%s, execRet:%r', self.name, realCommand, execRet)
 				retDict['code'] = execRet['code']
 				retDict['output'] = execRet['output']
 		else:
@@ -372,17 +364,17 @@ class SSHHost(threading.Thread):
 				self.cmdVars[ realAdjs['VAR'] ] = execRet['output'].strip()
 			if 'ASSERT' in realAdjs:
 				if 0 == cmp(realAdjs['ASSERT'], execRet['output'].strip()):
-					logger.info('threadName:%s, command:%s, execRet:%r', self.getName(), realCommand, execRet)
+					logger.debug('processName:%s, command:%s, execRet:%r', self.name, realCommand, execRet)
 					# assert success
 					retDict['code'] = execRet['code']
 					retDict['output'] = execRet['output']
 				else:
-					logger.error('threadName:%s, command:%s, execRet:%r', self.getName(), realCommand, execRet)
+					logger.error('processName:%s, command:%s, execRet:%r', self.name, realCommand, execRet)
 					# assert failed
 					retDict['code'] = -7007
 					retDict['output'] = "ASSERT failed, assert:%s, output:%r" % (realAdjs['ASSERT'], execRet['output'].strip())
 			else:
-				logger.info('threadName:%s, command:%s, execRet:%r', self.getName(), realCommand, execRet)
+				logger.debug('processName:%s, command:%s, execRet:%r', self.name, realCommand, execRet)
 				retDict['code'] = execRet['code']
 				retDict['output'] = execRet['output']
 		return retDict
@@ -400,6 +392,17 @@ class SSHHost(threading.Thread):
 						return True
 				return False
 
+	def printOP(self, obj):
+		if True is self.quietMode:
+			return
+		self.printSender.send( obj )
+
+	def outputOP(self, obj):
+		if True is self.outputFileQuietMode:
+			return
+		self.opLogSender.send( obj )
+
+
 	def run(self):
 		'''
 		result type:
@@ -410,7 +413,7 @@ class SSHHost(threading.Thread):
 			-3 : exec EXIT command failed
 			-4 : error when getting sshHomePath
 		'''
-		logger.info('thread start:%s', self.getName())
+		logger.info('process start:%s', self.name)
 
 		loginRetryCounter = 0
 		# login
@@ -419,22 +422,22 @@ class SSHHost(threading.Thread):
 			loginRet = self.pysshAgent.login()
 			if 0 != loginRet['code']:
 				if loginRetryCounter >= DDP_LOGIN_RETRY_TIMES:
-					logger.error('threadName:%s, login error, login ret:%r', self.getName(), loginRet)
-					self.printQueue.put( ['host: %s' % self.host['hostName'], 'msg: @@@LOGIN FAILED@@@ reason:%r' % loginRet['output']] )
-					self.resultQueue.put( {'host':self.host, 'firstCmdNode':self.firstCmdNode, 'type':-1, 'loginRet':loginRet} )
+					logger.error('processName:%s, login error, login ret:%r', self.name, loginRet)
+					self.printOP( ['host: %s' % self.host['hostName'], 'msg: @@@LOGIN FAILED@@@ reason:%r' % loginRet['output']] )
+					self.resultSender.send( {'host':self.host, 'type':-1, 'loginRet':loginRet} )
 					self.opLogList.append( ['@@@LOGIN FAILED@@@', 'login error code:%d' % loginRet['code'], 'reason:%r' % loginRet['output']] )
-					self.opLogQueue.put( {'host':self.host, 'opLogList':self.opLogList} )
+					self.outputOP( {'host':self.host, 'opLogList':self.opLogList} )
 					return 
 				else:
 					loginRetryCounter += 1
-					logger.warning('threadName:%s, login failed, login result:%r, but retry again, retryTimes:%d, retryCounter:%d', self.getName(), loginRet, DDP_LOGIN_RETRY_TIMES, loginRetryCounter)
-					self.printQueue.put( ['host: %s' % self.host['hostName'], 'msg: login failed, login result:%r, but retry again, retryTimes:%d, retryCounter:%d' % (loginRet, DDP_LOGIN_RETRY_TIMES, loginRetryCounter), ] )
+					logger.warning('processName:%s, login failed, login result:%r, but retry again, retryTimes:%d, retryCounter:%d', self.name, loginRet, DDP_LOGIN_RETRY_TIMES, loginRetryCounter)
+					self.printOP( ['host: %s' % self.host['hostName'], 'msg: login failed, login result:%r, but retry again, retryTimes:%d, retryCounter:%d' % (loginRet, DDP_LOGIN_RETRY_TIMES, loginRetryCounter), ] )
 					self.opLogList.append( ['@@@LOGIN FAILED@@@', 'login error code:%d' % loginRet['code'], 'reason:%r' % loginRet['output'], 'msg: retry again, retryTimes:%d, retryCounter:%d' % (DDP_LOGIN_RETRY_TIMES, loginRetryCounter)] )
 					continue
 			else:
-				logger.info('threadName:%s, login success, loginRet:%r', self.getName(), loginRet)
-				self.printQueue.put( ['host: %s' % self.host['hostName'], 'msg: login success'] )
-				self.opLogList.append( ['login result: %r' % loginRet, 'msg: login success'] )
+				logger.info('processName:%s, login success, loginRet:%r', self.name, loginRet)
+				self.printOP( ['host: %s' % self.host['hostName'], 'msg: login success'] )
+				self.opLogList.append( ['msg: login success',] )
 				break
 
 		#set sshHomePath in cmdVars
@@ -443,10 +446,10 @@ class SSHHost(threading.Thread):
 			execRet = self.pysshAgent.execCommand( "cd ~" )
 			if 0 != execRet['code']:
 				if getHomePathRetryCounter >= DDP_SSHHOMEPATH_RETRY_TIMES:
-					logger.error('threadName:%s, exec [cd ~] command error when getting sshHomePath error, ret:%r', self.getName(), execRet)
-					self.resultQueue.put( {'host':self.host, 'firstCmdNode':self.firstCmdNode, 'type':-4, 'execRet':execRet} )
+					logger.error('processName:%s, exec [cd ~] command error when getting sshHomePath error, ret:%r', self.name, execRet)
+					self.resultSender.send( {'host':self.host, 'type':-4, 'execRet':execRet} )
 					self.opLogList.append( ['!!!ERROR!!! exec [cd ~] command error when getting sshHomePath', 'error code:%d, reason:%r' % (execRet['code'], execRet['output'])] )
-					self.opLogQueue.put( {'host':self.host, 'opLogList':self.opLogList} )
+					self.outputOP( {'host':self.host, 'opLogList':self.opLogList} )
 					return 
 				else:
 					getHomePathRetryCounter += 1
@@ -455,16 +458,17 @@ class SSHHost(threading.Thread):
 				execRet = self.pysshAgent.execCommand( "pwd" )
 				if 0 != execRet['code']:
 					if getHomePathRetryCounter >= DDP_SSHHOMEPATH_RETRY_TIMES:
-						logger.error('threadName:%s, exec [pwd] command error when getting sshHomePath error, ret:%r', self.getName(), execRet)
-						self.resultQueue.put( {'host':self.host, 'firstCmdNode':self.firstCmdNode, 'type':-4, 'execRet':execRet} )
+						logger.error('processName:%s, exec [pwd] command error when getting sshHomePath error, ret:%r', self.name, execRet)
+						self.resultSender.send( {'host':self.host, 'type':-4, 'execRet':execRet} )
 						self.opLogList.append( ['!!!ERROR!!! exec [pwd] command error when getting sshHomePath', 'error code:%d, reason:%r' % (execRet['code'], execRet['output'])] )
-						self.opLogQueue.put( {'host':self.host, 'opLogList':self.opLogList} )
+						self.outputOP( {'host':self.host, 'opLogList':self.opLogList} )
 						return 
 					else:
 						getHomePathRetryCounter += 1
 						continue
 				else:
 					self.cmdVars[ 'sshHomePath' ] = execRet['output'].strip()
+					logger.info('processName:%s, get sshHomePath success:%s', self.name, self.cmdVars['sshHomePath'])
 					break
 
 
@@ -492,260 +496,309 @@ class SSHHost(threading.Thread):
 						tMsg = '%s is not a define variable' % item[0]
 						break
 				if tCode == 0:
-					logger.info('threadName:%s, meet EXIT command, exit value:%d, msg:%r', self.getName(), curCmdNode.value, realExitMsg)
-					self.printQueue.put( {'host':self.host, 'cmdNode':curCmdNode, 'execRet':{'code':0, 'output':realExitMsg},} )
-					self.resultQueue.put( {'host':self.host, 'firstCmdNode':self.firstCmdNode, 'type':1, 'exit':curCmdNode.value, 'msg':realExitMsg} )
+					logger.info('processName:%s, meet EXIT command, exit value:%d, msg:%r', self.name, curCmdNode.value, realExitMsg)
+					self.printOP( {'host':self.host, 'cmdNode':curCmdNode, 'execRet':{'code':0, 'output':realExitMsg},} )
+					self.resultSender.send( {'host':self.host, 'type':1, 'exit':curCmdNode.value, 'msg':realExitMsg} )
 					self.opLogList.append( {'cmdNode':curCmdNode, 'execRet':{'code':0, 'output':realExitMsg}} )
-					self.opLogQueue.put( {'host':self.host, 'opLogList':self.opLogList} )
+					self.outputOP( {'host':self.host, 'opLogList':self.opLogList} )
 				else:
-					logger.error('threadName:%s, meet EXIT command error, error code:%d, reason:%s', self.getName(), tCode, tMsg)
-					self.printQueue.put( ['host: %s' % self.host['hostName'], 'msg: !!!ERROR!!!, EXIT command error, error code:%d, reason:%s' % (tCode, tMsg), ] )
-					self.resultQueue.put( {'host':self.host, 'firstCmdNode':self.firstCmdNode, 'type':-3, 'errorCmdNode':curCmdNode, 'execRet':{'code':tCode, 'output':tMsg}} )
+					logger.error('processName:%s, meet EXIT command error, error code:%d, reason:%s', self.name, tCode, tMsg)
+					self.printOP( ['host: %s' % self.host['hostName'], 'msg: !!!ERROR!!!, EXIT command error, error code:%d, reason:%s' % (tCode, tMsg), ] )
+					self.resultSender.send( {'host':self.host, 'type':-3, 'errorCmdNode':curCmdNode, 'execRet':{'code':tCode, 'output':tMsg}} )
 					self.opLogList.append( {'cmdNode':curCmdNode, 'execRet':{'code':tCode, 'output':tMsg}} )
-					self.opLogQueue.put( {'host':self.host, 'opLogList':self.opLogList} )
+					self.outputOP( {'host':self.host, 'opLogList':self.opLogList} )
 				return 
 			elif 0 == cmp('cmd', curCmdNode.category):
 				if not self.isBelongsSelfCmdNode(curCmdNode):
-					logger.debug('threadName:%s, this CmdNode not bellongs self, continue, curCmdNode:%s', self.getName(), curCmdNode)
+					logger.debug('processName:%s, this CmdNode not bellongs self, continue, curCmdNode:%s', self.name, curCmdNode)
 					curCmdNode = curCmdNode.child
 					continue
 				execRet = self.execCmdNode(curCmdNode)
-				self.printQueue.put( {'host':self.host, 'cmdNode':curCmdNode, 'execRet':execRet} )
+				self.printOP( {'host':self.host, 'cmdNode':curCmdNode, 'execRet':execRet} )
 				if execRet['code'] >= 0:
-					logger.info('threadName:%s, command:%s, result code:%d, output:%r', self.getName(), execRet['realCommand'], execRet['code'], execRet['output'])
+					logger.info('processName:%s, command:%s, result code:%d, output:%r', self.name, execRet['realCommand'], execRet['code'], execRet['output'])
 					self.opLogList.append( {'cmdNode':curCmdNode, 'execRet':execRet} )
 					curCmdNode = curCmdNode.child
 				else:
 					if retryCounter >= self.retryTimes:
-						logger.error('threadName:%s, command:%s, result code:%d, output:%r', self.getName(), execRet['realCommand'], execRet['code'], execRet['output'])
-						self.resultQueue.put( {'host':self.host, 'firstCmdNode':self.firstCmdNode, 'type':-2, 'errorCmdNode':curCmdNode, 'execRet':execRet} )
+						logger.error('processName:%s, command:%s, result code:%d, output:%r', self.name, execRet['realCommand'], execRet['code'], execRet['output'])
+						self.resultSender.send( {'host':self.host, 'type':-2, 'errorCmdNode':curCmdNode, 'execRet':execRet} )
 						self.opLogList.append( {'cmdNode':curCmdNode, 'execRet':execRet} )
-						self.opLogQueue.put( {'host':self.host, 'opLogList':self.opLogList} )
+						self.outputOP( {'host':self.host, 'opLogList':self.opLogList} )
 						return
 					else:
 						retryCounter += 1
-						logger.warning('threadName:%s, exec command failed, command:%s, code:%d, reason:%r, but retry again, retryTimes:%d, retryCounter:%d', self.getName(), execRet['realCommand'], execRet['code'], execRet['output'], self.retryTimes, retryCounter)
+						logger.warning('processName:%s, exec command failed, command:%s, code:%d, reason:%r, but retry again, retryTimes:%d, retryCounter:%d', self.name, execRet['realCommand'], execRet['code'], execRet['output'], self.retryTimes, retryCounter)
 						self.retry.append( 'retryTimes:%d, retryCounter:%d, exec command failed, command:%s, error code:%d, reason:%r' % (self.retryTimes, retryCounter, execRet['realCommand'], execRet['code'], execRet['output']) )
-						self.printQueue.put( ['host: %s' % self.host['hostName'], 'command: %s' % execRet['realCommand'], 'output:\n%s' % stripCommandOutput(execRet['output']), 'msg: exec command failed, but retry again, retryTimes:%d, retryCounter:%d' % (self.retryTimes, retryCounter), ] )
+						self.printOP( ['host: %s' % self.host['hostName'], 'command: %s' % execRet['realCommand'], 'output:\n%s' % stripCommandOutput(execRet['output']), 'msg: exec command failed, but retry again, retryTimes:%d, retryCounter:%d' % (self.retryTimes, retryCounter), ] )
 						self.opLogList.append( ['command: %s' % execRet['realCommand'], 'output:\n%s' % stripCommandOutput(execRet['output']), 'msg: retry again, retryTimes:%d, retryCounter:%d' % (self.retryTimes, retryCounter)] )
 						#curCmdNode = self.firstCmdNode
 						continue
 			elif 0 == cmp('if', curCmdNode.category):
 				if not self.isBelongsSelfCmdNode(curCmdNode.condition):
-					logger.debug('threadName:%s, this CmdNode not bellongs self, continue, curCmdNode:%s', self.getName(), curCmdNode)
+					logger.debug('processName:%s, this CmdNode not bellongs self, continue, curCmdNode:%s', self.name, curCmdNode)
 					curCmdNode = curCmdNode.junction
 					continue
 				execRet = self.execCmdNode( curCmdNode.condition )
-				self.printQueue.put( {'host':self.host, 'cmdNode':curCmdNode, 'execRet':execRet} )
+				self.printOP( {'host':self.host, 'cmdNode':curCmdNode, 'execRet':execRet} )
 				self.opLogList.append( {'cmdNode':curCmdNode, 'execRet':execRet} )
 				if 0 == execRet['code']:
-					logger.info('threadName:%s, command:%s, result code:%d, output:%r, following Y', self.getName(), execRet['realCommand'], execRet['code'], execRet['output'])
+					logger.info('processName:%s, command:%s, result code:%d, output:%r, following Y', self.name, execRet['realCommand'], execRet['code'], execRet['output'])
 					curCmdNode = curCmdNode.Y
 				else:
-					logger.info('threadName:%s, command:%s, result code:%d, output:%r, following N', self.getName(), execRet['realCommand'], execRet['code'], execRet['output'])
+					logger.info('processName:%s, command:%s, result code:%d, output:%r, following N', self.name, execRet['realCommand'], execRet['code'], execRet['output'])
 					curCmdNode = curCmdNode.N
 			elif 0 == cmp('while', curCmdNode.category):
 				if not self.isBelongsSelfCmdNode(curCmdNode.condition):
-					logger.debug('threadName:%s, this CmdNode not bellongs self, continue, curCmdNode:%s', self.getName(), curCmdNode)
+					logger.debug('processName:%s, this CmdNode not bellongs self, continue, curCmdNode:%s', self.name, curCmdNode)
 					curCmdNode = curCmdNode.N
 					continue
 				execRet = self.execCmdNode( curCmdNode.condition )
-				self.printQueue.put( {'host':self.host, 'cmdNode':curCmdNode, 'execRet':execRet} )
+				self.printOP( {'host':self.host, 'cmdNode':curCmdNode, 'execRet':execRet} )
 				self.opLogList.append( {'cmdNode':curCmdNode, 'execRet':execRet} )
 				if 0 == execRet['code']:
-					logger.info('threadName:%s, command:%s, result code:%d, output:%r, following Y', self.getName(), execRet['realCommand'], execRet['code'], execRet['output'])
+					logger.info('processName:%s, command:%s, result code:%d, output:%r, following Y', self.name, execRet['realCommand'], execRet['code'], execRet['output'])
 					curCmdNode = curCmdNode.Y
 				else:
-					logger.info('threadName:%s, command:%s, result code:%d, output:%r, following N', self.getName(), execRet['realCommand'], execRet['code'], execRet['output'])
+					logger.info('processName:%s, command:%s, result code:%d, output:%r, following N', self.name, execRet['realCommand'], execRet['code'], execRet['output'])
 					curCmdNode = curCmdNode.N
 			elif 0 == cmp('do_while', curCmdNode.category):
 				if not self.isBelongsSelfCmdNode(curCmdNode.condition):
-					logger.debug('threadName:%s, this CmdNode not bellongs self, continue, curCmdNode:%s', self.getName(), curCmdNode)
+					logger.debug('processName:%s, this CmdNode not bellongs self, continue, curCmdNode:%s', self.name, curCmdNode)
 					curCmdNode = curCmdNode.N
 					continue
 				execRet = self.execCmdNode( curCmdNode.condition )
-				self.printQueue.put( {'host':self.host, 'cmdNode':curCmdNode, 'execRet':execRet} )
+				self.printOP( {'host':self.host, 'cmdNode':curCmdNode, 'execRet':execRet} )
 				self.opLogList.append( {'cmdNode':curCmdNode, 'execRet':execRet} )
 				if 0 == execRet['code']:
-					logger.info('threadName:%s, command:%s, result code:%d, output:%r, following Y', self.getName(), execRet['realCommand'], execRet['code'], execRet['output'])
+					logger.info('processName:%s, command:%s, result code:%d, output:%r, following Y', self.name, execRet['realCommand'], execRet['code'], execRet['output'])
 					curCmdNode = curCmdNode.Y
 				else:
-					logger.info('threadName:%s, command:%s, result code:%d, output:%r, following N', self.getName(), execRet['realCommand'], execRet['code'], execRet['output'])
+					logger.info('processName:%s, command:%s, result code:%d, output:%r, following N', self.name, execRet['realCommand'], execRet['code'], execRet['output'])
 					curCmdNode = curCmdNode.N
 		# exec all cmds, and no meet with EXIT command
-		logger.info('threadName:%s, fininsh all cmds and no meet with EXIT command', self.getName())
-		self.printQueue.put( ['hosts: %s' % self.host['hostName'], 'msg: success, finish all cmds, and no meet with EXIT command'] )
-		self.resultQueue.put( {'host':self.host, 'firstCmdNode':self.firstCmdNode, 'type':0} )
+		logger.info('processName:%s, fininsh all cmds and no meet with EXIT command', self.name)
+		self.printOP( ['hosts: %s' % self.host['hostName'], 'msg: success, finish all cmds, and no meet with EXIT command'] )
+		self.resultSender.send( {'host':self.host, 'type':0} )
 		self.opLogList.append( ['finish all cmds, and no meet with EXIT command'] )
-		self.opLogQueue.put( {'host':self.host, 'opLogList':self.opLogList} )
+		self.outputOP( {'host':self.host, 'opLogList':self.opLogList} )
 
 		# close pyssh
 		self.pysshAgent.close()
 
-		logger.info('thread finished:%s', self.getName())
+		logger.info('process finished:%s', self.name)
 		
 
 
 
 ##################################################################################################################
 
-def dealResultQueue(cmdsData=None, quietFiles=False, successHostsFile=None, errorHostsFile=None):
-	resultQueue = DDP_RESULT_QUEUE
-	printQueue = DDP_PRINT_QUEUE
-	opLogQueue = DDP_OPLOG_QUEUE
+class ResultProcess(Process):
+	def __init__(self, cmdsData=None, quietFiles=False, successHostsFile=None, errorHostsFile=None):
+		Process.__init__(self)
+		
+		self.receiver = DDP_RESULT_PIPE_RECEIVER
+		self.sender = DDP_RESULT_PIPE_SENDER
 
-	# deal parameters
-	if None is successHostsFile:
-		successHostsFile = DDP_SUCCESS_HOSTS_FILE
-	if None is errorHostsFile:
-		errorHostsFile = DDP_ERROR_HOSTS_FILE
+		self.opLogSender = DDP_OPLOG_PIPE_SENDER
+		self.printSender = DDP_PRINT_PIPE_SENDER
 
-	# check args
-	checkRet = checkArgs(successHostsFile=successHostsFile, errorHostsFile=errorHostsFile, quietFiles=quietFiles)
-	if 0 != checkRet['code']:
-		logger.error('can not pass args check in dealResultQueue, checkRet:%r', checkRet)
-		retDict = {'code':-1100, 'msg': 'parameter error code:%d, reason:%s' % (checkRet['code'], checkRet['msg']), 'hosts':dict()}
-		return retDict
-	
-	# define to store
-	successResultList = list()
-	errorResultList = list()
+		# deal parameters
+		if None is successHostsFile: self.successHostsFile = DDP_SUCCESS_HOSTS_FILE
+		else: self.successHostsFile = successHostsFile
 
-	# get cmds content except comments
-	if not None is cmdsData:
-		tCmdList = re.split(r';|\r?\n', cmdsData)
-		for line in tCmdList:
-			if line.strip() and not line.strip().startswith('#'):
-				successResultList.append( line )
-				errorResultList.append( line )
+		if None is errorHostsFile: self.errorHostsFile = DDP_ERROR_HOSTS_FILE
+		else: self.errorHostsFile = errorHostsFile
 
-	# insert decorate lines
-	successResultList.append('#-----------------------------------------------------------------------------------')
-	errorResultList.append('#-----------------------------------------------------------------------------------')
+		self.quietFiles = quietFiles
+		self.cmdsData = cmdsData
 
-	resultStatDict = {
-		'success': {1:0, 0:0},
-		'error' : {-1:0, -2:0, -3:0, -4:0},
-	}
-	unknownCounter = 0
-	errorHostCounter = 0
-	hostResultDict = dict()
-	errorHostList = list()
-	while not resultQueue.empty():
-		tResultItem = resultQueue.get()
-		tHost = tResultItem['host']
-		# generate host string
-		tHostStr = ""
-		if 'TAG' in tHost and 0 < len(tHost['TAG']):
-			for tTag in tHost['TAG']:
-				tHostStr = "%s , %s" % (tHostStr, tTag)
-			tHostStr = "%s :: " % tHostStr[3:]
-		if re.match(r'\d+\.\d+\.\d+\.\d+', tHost['hostName']):
-			tHostStr = "%s%s" % (tHostStr, tHost['hostName'])
+		self.switchFlag = Value('i', 1)
+
+		self.sFile = None
+		self.eFile = None
+
+
+	def turnOff(self):
+		self.switchFlag.value = 0
+		self.sender.send( None )
+
+	def closeSucc(self):
+		if None is self.sFile:
+			return
+		self.sFile.close()
+
+	def closeErr(self):
+		if None is self.eFile:
+			return
+		self.eFile.close()
+
+
+	def writeSucc(self, obj):
+		if None is self.sFile:
+			return
+		if isinstance(obj, list):
+			self.sFile.write("%s\n" % "\n".join(obj))
 		else:
-			tHostStr = '%s"%s"' % (tHostStr, tHost['hostName'])
-		tHostStr = '%s\t"%s"' % (tHostStr, tHost['user'])
-		if not None is tHost['password'] and 0 != cmp("", tHost['password']):
-			tHostStr = '%s\t"%s"' % (tHostStr, tHost['password'])
-		if not None is tHost['port']:
-			tHostStr = '%s\t%d' % (tHostStr, tHost['port'])
-
-		# generate comment string
-		if 1 == tResultItem['type']:
-			resultStatDict['success'][1] += 1
-			successResultList.append("%s\t#%s" % (tHostStr, 'EXIT %d' % tResultItem['exit']))
-			hostResultDict[ tHost['hostName'] ] = {'code':0, 'exit':tResultItem['exit'], 'msg':tResultItem['msg']}
-		elif 0 == tResultItem['type']: 
-			resultStatDict['success'][0] += 1
-			successResultList.append("%s\t#%s" % (tHostStr, 'fininshed'))
-			hostResultDict[ tHost['hostName'] ] = {'code':0, 'exit':0, 'msg':''}
-		elif -1 == tResultItem['type']:
-			resultStatDict['error'][-1] += 1
-			errorHostCounter += 1
-			errorHostList.append( tHost['hostName'] )
-			tLoginRet = tResultItem['loginRet']
-			errorResultList.append("%s\t#%s" % (tHostStr, '@@@LOGIN FAILED@@@, error code:%d, reason:%r' % (tLoginRet['code'], tLoginRet['output'])))
-			hostResultDict[ tHost['hostName'] ] = {'code':1, 'exit':tLoginRet['code'], 'msg': "%r" % tLoginRet['output']}
-		elif -2 == tResultItem['type']:
-			resultStatDict['error'][-2] += 1
-			errorHostCounter += 1
-			errorHostList.append( tHost['hostName'] )
-			tErrorCmdNode = tResultItem['errorCmdNode']
-			tExecRet = tResultItem['execRet']
-			errorResultList.append("%s\t#%s" % (tHostStr, '!!!ERROR!!!, command lineno:%d, command:%s, error code:%d, reason:%r' % (tErrorCmdNode.lineno, tExecRet['realCommand'], tExecRet['code'], tExecRet['output'])))
-			hostResultDict[ tHost['hostName'] ] = {'code':2, 'exit':tExecRet['code'], 'msg':'exec command failed, command:%s, reason:%r' % (tExecRet['realCommand'], tExecRet['output'])}
-		elif -3 == tResultItem['type']:
-			resultStatDict['error'][-3] += 1
-			errorHostCounter += 1
-			errorHostList.append( tHost['hostName'] )
-			tErrorCmdNode = tResultItem['errorCmdNode']
-			tExecRet = tResultItem['execRet']
-			errorResultList.append("%s\t#%s" % (tHostStr, '!!!ERROR!!!, exec EXIT command error, lineno:%d, error code:%d, reason:%r' % (tErrorCmdNode.lineno, tExecRet['code'], tExecRet['output'])))
-			hostResultDict[ tHost['hostName'] ] = {'code':3, 'exit':tExecRet['code'], 'msg':'exec EXIT command failed, reason:%r' % tExecRet['output']}
-		elif -4 == tResultItem['type']:
-			resultStatDict['error'][-4] += 1
-			errorHostCounter += 1
-			errorHostList.append( tHost['hostName'] )
-			tExecRet = tResultItem['execRet']
-			errorResultList.append("%s\t#%s" % (tHostStr, '!!!ERROR!!! error when getting sshHomePath, error code:%d, reason:%r' % (tExecRet['code'], tExecRet['output'])))
-			hostResultDict[ tHost['hostName'] ] = {'code':4, 'exit':tExecRet['code'], 'msg':'error when getting sshHomePath, reason:%r' % tExecRet['output']}
-		else:
-			unknownCounter += 1
-			errorHostList.append( tHost['hostName'] )
-			logger.error("unknown result item in resultQueue:%r", tResultItem)
-			printQueue.put( "!!!ERROR!!!: unknown result item:%r", tResultItem)
-			hostResultDict[ tHost['hostName'] ] = {'code':4, 'exit':DDP_EXIT_USELESS_VALUE, 'msg':'unknown'}
-
-	# insert decorate lines
-	successResultList.append('#-----------------------------------------------------------------------------------')
-	errorResultList.append('#-----------------------------------------------------------------------------------')
-	# stat infos
-	tStrList = list()
-	tStrList.append("FININSHED ALL HOSTS, STATISTICS INFO")
-	tStrList.append("success and no meet with EXIT command host's counter: %d" % resultStatDict['success'][0])
-	tStrList.append("success, terminal because of EXIT command host's counter: %d" % resultStatDict['success'][1])
-	tStrList.append("error, login failed host's counter: %d" % resultStatDict['error'][-1])
-	tStrList.append("error, command failed host's counter: %d" % resultStatDict['error'][-2])
-	tStrList.append("error, EXIT command failed host's counter: %d" % resultStatDict['error'][-3])
-	tStrList.append("error, get sshHomePath failed host's counter: %d" % resultStatDict['error'][-4])
-	if unknownCounter > 0:
-		tStrList.append("unknown result counter:%d" % unknownCounter)
-	printQueue.put( tStrList )
-	opLogQueue.put( tStrList )
-	for tStr in tStrList:
-		successResultList.append('#%s' % tStr)
-		errorResultList.append('#%s' % tStr)
+			self.sFile.write("%s\n" % obj)
+		self.sFile.flush()
 	
-	if not quietFiles:
-		# success host file
-		sFile = open(successHostsFile, 'w')
-		sFile.writelines( '\n'.join(successResultList) )
-		sFile.write('\n')
-		sFile.close()
-		# error host file
-		eFile = open(errorHostsFile, 'w')
-		eFile.writelines( '\n'.join(errorResultList) )
-		eFile.write('\n')
-		eFile.close()
+	def writeErr(self, obj):
+		if None is self.eFile:
+			return
+		if isinstance(obj, list):
+			self.eFile.write("%s\n" % "\n".join(obj))
+		else:
+			self.eFile.write("%s\n" % obj)
+		self.eFile.flush()
 
-	errorHostCounter += unknownCounter
-	retDict = {
-		'code': errorHostCounter,
-		'msg': ';'.join(errorHostList),
-		'hosts': hostResultDict,
-	}
-	return retDict
+	def run(self):
+		logger.info("result worker starts")
+	
+		if not self.quietFiles:
+			# success host file
+			self.sFile = open(self.successHostsFile, 'w')
+			# error host file
+			self.eFile = open(self.errorHostsFile, 'w')
+	
+		# get cmds content except comments
+		if not None is self.cmdsData:
+			tCmdList = re.split(r';|\r?\n', self.cmdsData)
+			tList = list()
+			for line in tCmdList:
+				if line.strip() and not line.strip().startswith('#'):
+					tList.append( line )
+			self.writeSucc(tList)
+			self.writeErr(tList)
+	
+		# insert decorate lines
+		self.writeSucc('#-----------------------------------------------------------------------------------')
+		self.writeErr('#-----------------------------------------------------------------------------------')
+	
+		resultStatDict = {
+			'success': {1:0, 0:0},
+			'error' : {-1:0, -2:0, -3:0, -4:0},
+		}
+		unknownCounter = 0
+		errorHostCounter = 0
+		hostResultDict = dict()
+		errorHostList = list()
+		while 1 == self.switchFlag.value or self.receiver.poll():
+			tResultItem = self.receiver.recv()
+			if None is tResultItem:
+				continue
+			tHost = tResultItem['host']
+			# generate host string
+			tHostStr = ""
+			if 'TAG' in tHost and 0 < len(tHost['TAG']):
+				for tTag in tHost['TAG']:
+					tHostStr = "%s , %s" % (tHostStr, tTag)
+				tHostStr = "%s :: " % tHostStr[3:]
+			if re.match(r'\d+\.\d+\.\d+\.\d+', tHost['hostName']):
+				tHostStr = "%s%s" % (tHostStr, tHost['hostName'])
+			else:
+				tHostStr = '%s"%s"' % (tHostStr, tHost['hostName'])
+			tHostStr = '%s\t"%s"' % (tHostStr, tHost['user'])
+			if not None is tHost['password'] and 0 != cmp("", tHost['password']):
+				tHostStr = '%s\t"%s"' % (tHostStr, tHost['password'])
+			if not None is tHost['port']:
+				tHostStr = '%s\t%d' % (tHostStr, tHost['port'])
+	
+			# generate comment string
+			if 1 == tResultItem['type']:
+				resultStatDict['success'][1] += 1
+				self.writeSucc("%s\t#%s" % (tHostStr, 'EXIT %d' % tResultItem['exit']))
+				hostResultDict[ tHost['hostName'] ] = {'code':0, 'exit':tResultItem['exit'], 'msg':tResultItem['msg']}
+			elif 0 == tResultItem['type']: 
+				resultStatDict['success'][0] += 1
+				self.writeSucc("%s\t#%s" % (tHostStr, 'fininshed'))
+				hostResultDict[ tHost['hostName'] ] = {'code':0, 'exit':0, 'msg':''}
+			elif -1 == tResultItem['type']:
+				resultStatDict['error'][-1] += 1
+				errorHostCounter += 1
+				errorHostList.append( tHost['hostName'] )
+				tLoginRet = tResultItem['loginRet']
+				self.writeErr("%s\t#%s" % (tHostStr, '@@@LOGIN FAILED@@@, error code:%d, reason:%r' % (tLoginRet['code'], tLoginRet['output'])))
+				hostResultDict[ tHost['hostName'] ] = {'code':1, 'exit':tLoginRet['code'], 'msg': "%r" % tLoginRet['output']}
+			elif -2 == tResultItem['type']:
+				resultStatDict['error'][-2] += 1
+				errorHostCounter += 1
+				errorHostList.append( tHost['hostName'] )
+				tErrorCmdNode = tResultItem['errorCmdNode']
+				tExecRet = tResultItem['execRet']
+				self.writeErr("%s\t#%s" % (tHostStr, '!!!ERROR!!!, command lineno:%d, command:%s, error code:%d, reason:%r' % (tErrorCmdNode.lineno, tExecRet['realCommand'], tExecRet['code'], tExecRet['output'])))
+				hostResultDict[ tHost['hostName'] ] = {'code':2, 'exit':tExecRet['code'], 'msg':'exec command failed, command:%s, reason:%r' % (tExecRet['realCommand'], tExecRet['output'])}
+			elif -3 == tResultItem['type']:
+				resultStatDict['error'][-3] += 1
+				errorHostCounter += 1
+				errorHostList.append( tHost['hostName'] )
+				tErrorCmdNode = tResultItem['errorCmdNode']
+				tExecRet = tResultItem['execRet']
+				self.writeErr("%s\t#%s" % (tHostStr, '!!!ERROR!!!, exec EXIT command error, lineno:%d, error code:%d, reason:%r' % (tErrorCmdNode.lineno, tExecRet['code'], tExecRet['output'])))
+				hostResultDict[ tHost['hostName'] ] = {'code':3, 'exit':tExecRet['code'], 'msg':'exec EXIT command failed, reason:%r' % tExecRet['output']}
+			elif -4 == tResultItem['type']:
+				resultStatDict['error'][-4] += 1
+				errorHostCounter += 1
+				errorHostList.append( tHost['hostName'] )
+				tExecRet = tResultItem['execRet']
+				self.writeErr("%s\t#%s" % (tHostStr, '!!!ERROR!!! error when getting sshHomePath, error code:%d, reason:%r' % (tExecRet['code'], tExecRet['output'])))
+				hostResultDict[ tHost['hostName'] ] = {'code':4, 'exit':tExecRet['code'], 'msg':'error when getting sshHomePath, reason:%r' % tExecRet['output']}
+			else:
+				unknownCounter += 1
+				errorHostList.append( tHost['hostName'] )
+				logger.error("unknown result item in resultQueue:%r", tResultItem)
+				self.printSender.send( "!!!ERROR!!!: unknown result item:%r", tResultItem)
+				hostResultDict[ tHost['hostName'] ] = {'code':4, 'exit':DDP_EXIT_USELESS_VALUE, 'msg':'unknown'}
+	
+		# insert decorate lines
+		self.writeSucc('#-----------------------------------------------------------------------------------')
+		self.writeErr('#-----------------------------------------------------------------------------------')
+		# stat infos
+		tStrList = list()
+		tStrList.append("FININSHED ALL HOSTS, STATISTICS INFO")
+		tStrList.append("success and no meet with EXIT command host's counter: %d" % resultStatDict['success'][0])
+		tStrList.append("success, terminal because of EXIT command host's counter: %d" % resultStatDict['success'][1])
+		tStrList.append("error, login failed host's counter: %d" % resultStatDict['error'][-1])
+		tStrList.append("error, command failed host's counter: %d" % resultStatDict['error'][-2])
+		tStrList.append("error, EXIT command failed host's counter: %d" % resultStatDict['error'][-3])
+		tStrList.append("error, get sshHomePath failed host's counter: %d" % resultStatDict['error'][-4])
+		if unknownCounter > 0:
+			tStrList.append("unknown result counter:%d" % unknownCounter)
+		self.printSender.send( tStrList )
+		self.opLogSender.send( tStrList )
+
+		self.writeSucc( tStrList )
+		self.writeErr( tStrList )
+		
+		#close files
+		self.closeSucc()
+		self.closeErr()
+	
+		errorHostCounter += unknownCounter
+		tRetDict = {
+			'code': errorHostCounter,
+			'msg': ';'.join(errorHostList),
+			'hosts': hostResultDict,
+		}
+
+		# return final result by result pipe
+		#self.retDict.value = json.dumps( tRetDict )
+		self.sender.send( tRetDict )
+
+#################################################################################################################################################
 
 
-def setGlobalVar(retryTimes=None, threadsNO=None, successHostsFile=None, errorHostsFile=None):
+def setGlobalVar(retryTimes=None, workersNO=None, successHostsFile=None, errorHostsFile=None):
 	global DDP_RUNNING_HOST
 	global DDP_RETRY_TIMES
 	global DDP_SUCCESS_HOSTS_FILE
 	global DDP_ERROR_HOSTS_FILE
+	global DDP_QUIET_MODE
+	global DDP_OUTPUT_MODE
 
-	if not None is threadsNO:
-		if threadsNO < 1: DDP_RUNNING_HOST = 1
-		else: DDP_RUNNING_HOST = threadsNO
+	if not None is workersNO:
+		if workersNO < 1: DDP_RUNNING_HOST = 1
+		else: DDP_RUNNING_HOST = workersNO
 	if not None is retryTimes:
 		if retryTimes < 0: DDP_RETRY_TIMES = 0
 		else: DDP_RETRY_TIMES = retryTimes
@@ -824,7 +877,7 @@ def checkArgs(hostsFile=None, cmdsFile=None, output=None, successHostsFile=None,
 
 def argsDefine():
 	argsParser = argparse.ArgumentParser(prog="ddp", description = "ddp is a python ssh script")
-	argsParser.add_argument('-v', '--version', action='version', version='%(prog)s, author:vincentzhwg@gmail.com, version: 1.0.0')
+	argsParser.add_argument('-v', '--version', action='version', version='%(prog)s, author:vincentzhwg@gmail.com, version: 1.1.0')
 	argsParser.add_argument('-l', '--hostsFile', help="the path of hostsFile, this parameter can not used with hostsString at the same time")
 	argsParser.add_argument('-s', '--hostsString', help="hosts string, this parameter can not used with hostsFile at the same time")
 	argsParser.add_argument('-c', '--cmdsFile', help="the path of cmdsFile, this parameter can not used with execCmds at the same time")
@@ -832,7 +885,7 @@ def argsDefine():
 	argsParser.add_argument('-eh', '--errorHostsFile', help="the path of error hosts file")
 	argsParser.add_argument('-sh', '--successHostsFile', help="the path of success hosts file")
 	argsParser.add_argument('-r', '--retryTimes', type=int, help="retry times after error")
-	argsParser.add_argument('-t', '--threadsNO', type=int, help="number of concurrent threads")
+	argsParser.add_argument('-w', '--workersNO', type=int, help="number of concurrent running hosts. less than or equal 1 means serial execution; greater than 1 means concurrent execution")
 	argsParser.add_argument('-q', '--quiet', action='store_true', help="quiet mode, no std output")
 	argsParser.add_argument('-qq', '--quietFiles', action='store_true', help="not generate successHostsFile and errorHostsFile")
 	argsParser.add_argument('-j', '--jsonFormat', action='store_true', help="return result as json string")
@@ -842,49 +895,33 @@ def argsDefine():
 
 
 
-def ddpRun(hostList, firstCmdNode, retryTimes=None, threadsNO=None, cmdVars=dict()):
+def ddpRun(hostList, firstCmdNode, retryTimes=None, workersNO=None, cmdVars=dict(), quietMode=False, outputFileQuietMode=True):
 	# deal parameters
 	if None is retryTimes: retryTimes = DDP_RETRY_TIMES
-	if None is threadsNO: threadsNO = DDP_RUNNING_HOST
+	if None is workersNO: workersNO = DDP_RUNNING_HOST
 
-	sshHostThreads = list()
+	sshHostProcesses = list()
 	for tHost in hostList:
-		sshHostThreads.append( SSHHost(host=tHost, firstCmdNode=firstCmdNode, retryTimes=retryTimes, cmdVars=cmdVars) )
+		sshHostProcesses.append( SSHHost(host=tHost, firstCmdNode=firstCmdNode, retryTimes=retryTimes, cmdVars=cmdVars, quietMode=quietMode, outputFileQuietMode=outputFileQuietMode) )
 	
 	# running 
-	if threadsNO > 1:
-		i = 0
-		runningCounter = 0
-		livingThreadDict = dict()
-		completedCounter = 0
-		while True:
-			if completedCounter == len(sshHostThreads):
-				break
-			while runningCounter < threadsNO and i < len(sshHostThreads):
-				td = sshHostThreads[i]
-				td.start()
-				livingThreadDict[ i ] = td
-				runningCounter += 1
-				i += 1
-			tKeys = livingThreadDict.keys()
-			for k in tKeys:
-				tItem = livingThreadDict[ k ]
-				if not tItem.isAlive():
-					del livingThreadDict[ k ]
-					completedCounter += 1
-					runningCounter -= 1
+	if workersNO > 1:
+		for p in sshHostProcesses:
+			p.start()
+		for p in sshHostProcesses:
+			p.join()
 	else:
-		for tT in sshHostThreads:
-			tT.start()
-			tT.join()
+		for tP in sshHostProcesses:
+			tP.start()
+			tP.join()
 	
 
 
 
 
-def ddp(hostList, firstCmdNode, output=None, retryTimes=None, threadsNO=None, quiet=False, jsonFormat=False, quietFiles=False, printResult=False, successHostsFile=None, errorHostsFile=None):
+def ddp(hostList, firstCmdNode, output=None, retryTimes=None, workersNO=None, quiet=False, jsonFormat=False, quietFiles=False, printResult=False, successHostsFile=None, errorHostsFile=None):
 	# set global var by args
-	setGlobalVar(retryTimes=retryTimes, threadsNO=threadsNO, successHostsFile=successHostsFile, errorHostsFile=errorHostsFile)
+	setGlobalVar(retryTimes=retryTimes, workersNO=workersNO, successHostsFile=successHostsFile, errorHostsFile=errorHostsFile)
 	logger.info("conf parameter final values:")
 	logger.info("DDP_EXIT_USELESS_VALUE:%d", DDP_EXIT_USELESS_VALUE)
 	logger.info("DDP_RUNNING_HOST:%d", DDP_RUNNING_HOST)
@@ -895,7 +932,7 @@ def ddp(hostList, firstCmdNode, output=None, retryTimes=None, threadsNO=None, qu
 
 	# deal parameters
 	if None is retryTimes: retryTimes = DDP_RETRY_TIMES
-	if None is threadsNO: threadsNO = DDP_RUNNING_HOST
+	if None is workersNO: workersNO = DDP_RUNNING_HOST
 	if None is successHostsFile: successHostsFile = DDP_SUCCESS_HOSTS_FILE
 	if None is errorHostsFile: errorHostsFile = DDP_ERROR_HOSTS_FILE
 	
@@ -905,40 +942,51 @@ def ddp(hostList, firstCmdNode, output=None, retryTimes=None, threadsNO=None, qu
 		logger.error('can not pass args check, checkRet:%r', checkRet)
 		retDict = {'code':checkRet['code'], 'msg':checkRet['msg'], 'hosts':dict()}
 		if jsonFormat:
-			retDict = jsonString( retDict )
+			retDict = json.dumps( retDict )
 		if printResult:
 			print retDict
 		return retDict
 
-	# start print thread if not in quiet mode
+
+	# start print worker if not in quiet mode
 	if not quiet:
-		printThread = PrintThread()
-		logger.info("start print thread")
-		printThread.start()
-	# start oplog write thread if -o
+		printWorker = PrintProcess()
+		logger.info("start print worker")
+		printWorker.start()
+	# start oplog write worker if -o
 	if output:
-		opLogWriteThread = OPLogWriteThread( output )
-		opLogWriteThread.start()
+		opLogWorker = OPLogProcess( output )
+		opLogWorker.start()
+		
+	# start result worker 
+	resultWorker = ResultProcess(quietFiles=quietFiles, successHostsFile=successHostsFile, errorHostsFile=errorHostsFile)
+	logger.info("start result worker")
+	resultWorker.start()
 
 	# execute ssh command
-	ddpRun(hostList, firstCmdNode, retryTimes=retryTimes, threadsNO=threadsNO)
+	if output: outputFileQuietMode = False
+	else: outputFileQuietMode = True
+	ddpRun(hostList, firstCmdNode, retryTimes=retryTimes, workersNO=workersNO, quietMode=quiet, outputFileQuietMode=outputFileQuietMode)
 	
-	# deal resultQueue
-	retDict = dealResultQueue(quietFiles=quietFiles, successHostsFile=successHostsFile, errorHostsFile=errorHostsFile)
+	# stop result worker
+	resultWorker.turnOff()
+	resultWorker.join()
 
-	# stop print thread
+	# stop print worker
 	if not quiet:
-		logger.info("turn off print thread")
-		printThread.turnOff()
-		#printThread.join()
-	# stop oplog write thread
+		logger.info("turn off print worker")
+		printWorker.turnOff()
+		printWorker.join()
+	# stop oplog write worker
 	if output:
-		logger.info("turn off oplog write thread")
-		opLogWriteThread.turnOff()
-		opLogWriteThread.join()
+		logger.info("turn off oplog worker")
+		opLogWorker.turnOff()
+		opLogWorker.join()
 	
+	
+	retDict = DDP_RESULT_PIPE_RECEIVER.recv()
 	if jsonFormat:
-		retDict = jsonString( retDict )
+		retDict = json.dumps( retDict )
 	if printResult:
 		print retDict
 	return retDict
@@ -946,10 +994,10 @@ def ddp(hostList, firstCmdNode, output=None, retryTimes=None, threadsNO=None, qu
 
 
 
-def main(hostsFile=None, cmdsFile=None, hostsString=None, execCmds=None, output=None, retryTimes=None, threadsNO=None, quiet=False, jsonFormat=False, quietFiles=False, printResult=False, successHostsFile=None, errorHostsFile=None):
+def main(hostsFile=None, cmdsFile=None, hostsString=None, execCmds=None, output=None, retryTimes=None, workersNO=None, quiet=False, jsonFormat=False, quietFiles=False, printResult=False, successHostsFile=None, errorHostsFile=None):
 
 	# set global var by args
-	setGlobalVar(retryTimes=retryTimes, threadsNO=threadsNO, successHostsFile=successHostsFile, errorHostsFile=errorHostsFile)
+	setGlobalVar(retryTimes=retryTimes, workersNO=workersNO, successHostsFile=successHostsFile, errorHostsFile=errorHostsFile)
 	logger.info("conf parameter final values:")
 	logger.info("DDP_EXIT_USELESS_VALUE:%d", DDP_EXIT_USELESS_VALUE)
 	logger.info("DDP_RUNNING_HOST:%d", DDP_RUNNING_HOST)
@@ -960,7 +1008,7 @@ def main(hostsFile=None, cmdsFile=None, hostsString=None, execCmds=None, output=
 
 	# deal parameters
 	if None is retryTimes: retryTimes = DDP_RETRY_TIMES
-	if None is threadsNO: threadsNO = DDP_RUNNING_HOST
+	if None is workersNO: workersNO = DDP_RUNNING_HOST
 	if None is successHostsFile: successHostsFile = DDP_SUCCESS_HOSTS_FILE
 	if None is errorHostsFile: errorHostsFile = DDP_ERROR_HOSTS_FILE
 	
@@ -970,23 +1018,25 @@ def main(hostsFile=None, cmdsFile=None, hostsString=None, execCmds=None, output=
 		logger.error('can not pass args check, checkRet:%r', checkRet)
 		retDict = {'code':checkRet['code'], 'msg':checkRet['msg'], 'hosts':dict()}
 		if jsonFormat:
-			retDict = jsonString( retDict )
+			retDict = json.dumps( retDict )
 		if DDP_USED_AS_SCRIPT:
 			sys.exit( retDict )
 		else:
 			if printResult:
 				print retDict
 			return retDict
+	
 
-	# start print thread if not in quiet mode
+	# start print worker if not in quiet mode
 	if not quiet:
-		printThread = PrintThread()
-		logger.info("start print thread")
-		printThread.start()
-	# start oplog write thread if -o
+		printWorker = PrintProcess()
+		printWorker.start()
+		logger.info("start print worker")
+	# start oplog write worker if -o
 	if output:
-		opLogWriteThread = OPLogWriteThread( output )
-		opLogWriteThread.start()
+		opLogWorker = OPLogProcess( output )
+		opLogWorker.start()
+		logger.info("start opLog worker")
 
 	# hosts and cmds source
 	if None is hostsFile and not None is hostsString:
@@ -999,7 +1049,7 @@ def main(hostsFile=None, cmdsFile=None, hostsString=None, execCmds=None, output=
 		logger.error('should use either hostsFile or hostsString, but can not use them together at the same time')
 		retDict = {'code':-1017, 'msg':'should use either hostsFile or hostsString, but can not use them together at the same time', 'hosts':dict()}
 		if jsonFormat:
-			retDict = jsonString( retDict )
+			retDict = json.dumps( retDict )
 		if DDP_USED_AS_SCRIPT:
 			sys.exit( retDict )
 		else:
@@ -1016,7 +1066,7 @@ def main(hostsFile=None, cmdsFile=None, hostsString=None, execCmds=None, output=
 		logger.error('should use either cmdsFile or execCmds, but can not use them together at the same time')
 		retDict = {'code':-1018, 'msg':'should use either cmdsFile or execCmds, but can not use them together at the same time', 'hosts':dict()}
 		if jsonFormat:
-			retDict = jsonString( retDict )
+			retDict = json.dumps( retDict )
 		if DDP_USED_AS_SCRIPT:
 			sys.exit( retDict )
 		else:
@@ -1031,7 +1081,7 @@ def main(hostsFile=None, cmdsFile=None, hostsString=None, execCmds=None, output=
 		logger.error( 'error when parsing hosts file:%s, reason:%r', hostsFile, getRet )
 		retDict = {'code':getRet['code'], 'msg':getRet['msg'], 'hosts':dict()}
 		if jsonFormat:
-			retDict = jsonString( retDict )
+			retDict = json.dumps( retDict )
 		if DDP_USED_AS_SCRIPT:
 			sys.exit( retDict )
 		else:
@@ -1051,7 +1101,7 @@ def main(hostsFile=None, cmdsFile=None, hostsString=None, execCmds=None, output=
 		logger.error( 'error when parsing cmds file:%s, reason:%r', cmdsFile, getRet )
 		retDict = {'code':getRet['code'], 'msg':getRet['msg'], 'hosts':dict()}
 		if jsonFormat:
-			retDict = jsonString( retDict )
+			retDict = json.dumps( retDict )
 		if DDP_USED_AS_SCRIPT:
 			sys.exit( retDict )
 		else:
@@ -1062,26 +1112,36 @@ def main(hostsFile=None, cmdsFile=None, hostsString=None, execCmds=None, output=
 		firstCmdNode = getRet['cmdNode']
 		logger.info("get cmds from cmds file [%s] success, cmds are following:%s", cmdsFile, firstCmdNode.depthTraversal())
 
-	# execute ssh command
-	ddpRun(hostList, firstCmdNode, retryTimes=retryTimes, threadsNO=threadsNO)
-	
-	# deal resultQueue
-	retDict = dealResultQueue(cmdsData=cmdsData, quietFiles=quietFiles, successHostsFile=successHostsFile, errorHostsFile=errorHostsFile)
+	# start result worker
+	resultWorker = ResultProcess(cmdsData=cmdsData, quietFiles=quietFiles, successHostsFile=successHostsFile, errorHostsFile=errorHostsFile)
+	resultWorker.start()
 
-	# stop print thread
-	if not quiet:
-		logger.info("turn off print thread")
-		printThread.turnOff()
-		#printThread.join()
-	# stop oplog write thread
-	if output:
-		logger.info("turn off oplog write thread")
-		opLogWriteThread.turnOff()
-		opLogWriteThread.join()
+	# execute ssh command
+	if output: outputFileQuietMode = False
+	else: outputFileQuietMode = True
+	ddpRun(hostList, firstCmdNode, retryTimes=retryTimes, workersNO=workersNO, quietMode=quiet, outputFileQuietMode=outputFileQuietMode)
 	
+	# stop result worker
+	resultWorker.turnOff()
+	resultWorker.join()
+
+	# stop print worker
+	if not quiet:
+		logger.info("turn off print worker")
+		printWorker.turnOff()
+		printWorker.join()
+	# stop oplog worker
+	if output:
+		logger.info("turn off oplog worker")
+		opLogWorker.turnOff()
+		opLogWorker.join()
+	
+	
+
+	retDict = DDP_RESULT_PIPE_RECEIVER.recv()
 	totalCode = retDict['code']
 	if jsonFormat:
-		retDict = jsonString( retDict )
+		retDict = json.dumps( retDict )
 	if printResult:
 		print retDict
 	if DDP_USED_AS_SCRIPT:
@@ -1121,9 +1181,9 @@ if __name__ == '__main__':
 	except:
 		#logger.exception("occurs exception when parsing args, exit 1")
 		retDict = {'code':-1001, 'msg':'parameters can not be recognized', 'hosts':dict()}
-		sys.exit( jsonString(retDict) )
+		sys.exit( json.dumps(retDict) )
 		
 	#print "args:%r" % args
 	#sys.exit(1)
 	
-	main(hostsFile=args.hostsFile, cmdsFile=args.cmdsFile, hostsString=args.hostsString, execCmds=args.execCmds, output=args.output, quiet=args.quiet, quietFiles=args.quietFiles, retryTimes=args.retryTimes, threadsNO=args.threadsNO, jsonFormat=args.jsonFormat, printResult=args.printResult, successHostsFile=args.successHostsFile, errorHostsFile=args.errorHostsFile)
+	main(hostsFile=args.hostsFile, cmdsFile=args.cmdsFile, hostsString=args.hostsString, execCmds=args.execCmds, output=args.output, quiet=args.quiet, quietFiles=args.quietFiles, retryTimes=args.retryTimes, workersNO=args.workersNO, jsonFormat=args.jsonFormat, printResult=args.printResult, successHostsFile=args.successHostsFile, errorHostsFile=args.errorHostsFile)
