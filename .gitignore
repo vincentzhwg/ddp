@@ -15,4 +15,5 @@ lib/pyssh/PySSH.pyc
 lib/pyssh/PySSHUtil.pyc
 lib/pyssh/__init__.pyc
 lib/pyssh/util.pyc
+lib/pyssh/lib/pexpect.pyc
 success_hosts.txt
