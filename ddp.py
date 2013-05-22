@@ -24,8 +24,8 @@ DDP_ROOT_DIR = os.path.dirname(os.path.realpath(__file__))
 os.environ['DDP_ROOT_DIR'] = DDP_ROOT_DIR
 
 loggingConfigFile = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'conf/logging.conf')
-#logging.config.fileConfig( loggingConfigFile, disable_existing_loggers = False )
-logging.config.fileConfig( loggingConfigFile )
+logging.config.fileConfig( loggingConfigFile, disable_existing_loggers = False )
+#logging.config.fileConfig( loggingConfigFile )
 logger = logging.getLogger( __name__ )
 
 import argparse
@@ -431,8 +431,8 @@ class SSHHost(Process):
 				else:
 					loginRetryCounter += 1
 					logger.warning('processName:%s, login failed, login result:%r, but retry again, retryTimes:%d, retryCounter:%d', self.name, loginRet, DDP_LOGIN_RETRY_TIMES, loginRetryCounter)
-					self.printOP( ['host: %s' % self.host['hostName'], 'msg: login failed, login result:%r, but retry again, retryTimes:%d, retryCounter:%d' % (loginRet, DDP_LOGIN_RETRY_TIMES, loginRetryCounter), ] )
-					self.opLogList.append( ['@@@LOGIN FAILED@@@', 'login error code:%d' % loginRet['code'], 'reason:%r' % loginRet['output'], 'msg: retry again, retryTimes:%d, retryCounter:%d' % (DDP_LOGIN_RETRY_TIMES, loginRetryCounter)] )
+					#self.printOP( ['host: %s' % self.host['hostName'], 'msg: login failed, login result:%r, but retry again, retryTimes:%d, retryCounter:%d' % (loginRet, DDP_LOGIN_RETRY_TIMES, loginRetryCounter), ] )
+					#self.opLogList.append( ['@@@LOGIN FAILED@@@', 'login error code:%d' % loginRet['code'], 'reason:%r' % loginRet['output'], 'msg: retry again, retryTimes:%d, retryCounter:%d' % (DDP_LOGIN_RETRY_TIMES, loginRetryCounter)] )
 					continue
 			else:
 				logger.info('processName:%s, login success, loginRet:%r', self.name, loginRet)
@@ -667,7 +667,7 @@ class ResultProcess(Process):
 			tList = list()
 			for line in tCmdList:
 				if line.strip() and not line.strip().startswith('#'):
-					tList.append( line )
+					tList.append( '#%s' % line )
 			self.writeSucc(tList)
 			self.writeErr(tList)
 	
@@ -767,8 +767,9 @@ class ResultProcess(Process):
 		self.printSender.send( tStrList )
 		self.opLogSender.send( tStrList )
 
-		self.writeSucc( tStrList )
-		self.writeErr( tStrList )
+		for tStr in tStrList:
+			self.writeSucc( '#%s' % tStr )
+			self.writeErr( '#%s' % tStr )
 		
 		#close files
 		self.closeSucc()
@@ -877,7 +878,7 @@ def checkArgs(hostsFile=None, cmdsFile=None, output=None, successHostsFile=None,
 
 def argsDefine():
 	argsParser = argparse.ArgumentParser(prog="ddp", description = "ddp is a python ssh script")
-	argsParser.add_argument('-v', '--version', action='version', version='%(prog)s, author:vincentzhwg@gmail.com, version: 1.1.0')
+	argsParser.add_argument('-v', '--version', action='version', version='%(prog)s, author:vincentzhwg@gmail.com, version: 1.1.1')
 	argsParser.add_argument('-l', '--hostsFile', help="the path of hostsFile, this parameter can not used with hostsString at the same time")
 	argsParser.add_argument('-s', '--hostsString', help="hosts string, this parameter can not used with hostsFile at the same time")
 	argsParser.add_argument('-c', '--cmdsFile', help="the path of cmdsFile, this parameter can not used with execCmds at the same time")

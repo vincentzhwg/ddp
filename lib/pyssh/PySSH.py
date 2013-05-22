@@ -169,11 +169,23 @@ class PySSH:
 		0 : success
 		"""
 		logger.info("hostName:%s, parameter:command:%s, timeout:%r", self.hostName, command, timeout)
-		if 0 == cmp('pyssh_scp_local_pull_push', command):
+		if 0 == cmp('pyssh_scp_local_pull_push', command) or 0 == cmp('pyssh_scp_local_push_pull', command):
 			tLocalIntf = LOCAL_INTERFACE
 			if 'LOCAL_INTF' in commandExt:
 				tLocalIntf = commandExt['LOCAL_INTF']
-			return self.scpFromLocalPullPush(localPassword=commandExt['LOCAL_PWD'], localPath=commandExt['LOCAL_PATH'], sshHostPath=commandExt['SSH_HOST_PATH'], localIsdir=commandExt['LOCAL_ISDIR'], localIntf=tLocalIntf, localPort=commandExt['LOCAL_PORT'])
+			tLocalPwd = None
+			if 'LOCAL_PWD' in commandExt:
+				tLocalPwd = commandExt['LOCAL_PWD']
+			tLocalPort = None
+			if 'LOCAL_PORT' in commandExt:
+				tLocalPort = commandExt['LOCAL_PORT']
+			tLocalIsDir = False
+			if 'LOCAL_ISDIR' in commandExt:
+				tLocalIsDir = commandExt['LOCAL_ISDIR']
+			if 0 == cmp('pyssh_scp_local_pull_push', command):
+				return self.scpFromLocalPullPush(localPassword=tLocalPwd, localPath=commandExt['LOCAL_PATH'], sshHostPath=commandExt['SSH_HOST_PATH'], localIsdir=tLocalIsDir, localIntf=tLocalIntf, localPort=tLocalPort)
+			elif 0 == cmp('pyssh_scp_local_push_pull', command):
+				return self.scpFromLocalPushPull(localPassword=tLocalPwd, localPath=commandExt['LOCAL_PATH'], sshHostPath=commandExt['SSH_HOST_PATH'], localIsdir=tLocalIsDir, localIntf=tLocalIntf, localPort=tLocalPort)
 		elif command.startswith('scp'):
 			scpCommand = command
 			if 'SCP_PWD' in commandExt:
@@ -902,26 +914,29 @@ class PySSH:
 			logger.debug("hostName:%s, command:'echo ~', result:%r", self.hostName, cmdRet)
 			return {'code':0, 'path':cmdRet['output'].strip()}
 
-	
-	def scpFromLocalPullPush(self,  localPath, sshHostPath, localPassword=None, localIsdir=False, localIntf=LOCAL_INTERFACE, localPort=None):
+
+
+	def scpFromLocalPull(self,  localPath, sshHostPath, localPassword=None, localIsdir=False, localIntf=None, localPort=None):
+		if None is localIntf:
+			localIntf = LOCAL_INTERFACE
 		# get local username
 		try:
 			localUser = getpass.getuser()
 		except:
 			logger.exception('hostName:%s, get local username occurs exception', self.hostName)
-			return {'code':-5001, 'output':'SCP_LOCAL_PULL_PUSH, get local username occurs exception'}
+			return {'code':-5001, 'output':'get local username occurs exception'}
 		# get local ip address
 		try:
 			localIP = util.getIP( localIntf )
 			if None is localIP:
-				return {'code':-5002, 'output':'pyssh_scp_local_pull_push, can not get local ip address'}
+				return {'code':-5002, 'output':'can not get local ip address'}
 		except:
 			logger.exception('hostName:%s, get local ip address occurs exception', self.hostName)
-			return {'code':-5003, 'output':'SCP_LOCAL_PULL_PUSH, get local ip address occurs exception'}
+			return {'code':-5003, 'output':'get local ip address occurs exception'}
 		# local path, whether absolute path
 		if not os.path.isabs(localPath):
 			logger.error('hostName:%s, local path [%s] should be absolute path', self.hostName, localPath)
-			return {'code': -5004, 'output':'SCP_LOCAL_PULL_PUSH, localPath should be absolute path'}
+			return {'code': -5004, 'output':'localPath should be absolute path'}
 		# localIsdir
 		tR = ""
 		if localIsdir:
@@ -944,9 +959,15 @@ class PySSH:
 			scpRet = self.execScpCommand(scpPullCommand, localPassword)
 			if 0 != scpRet['code']:
 				logger.error('hostName:%s, scp from local pull failed, command:%s, result:%r', self.hostName, scpPullCommand, scpRet)
+				return {'code':-5018, 'output':'scp pull from local failed, error code:%d, reason:%r' % (scpRet['code'], scpRet['output'])}
 			else:
 				logger.info('hostName:%s, scp from local pull success, command:%s, result:%r', self.hostName, scpPullCommand, scpRet)
-				return {'code':0, 'output':'SCP_LOCAL_PULL_PUSH, scp pull from local success'}
+				return {'code':0, 'output':'scp pull from local success'}
+		else:
+			return {'code':-5019, 'output':'scp pull from local failed, can not pass test'}
+
+
+	def scpFromLocalPush(self,  localPath, sshHostPath, localIsdir=False):
 		# test push from local
 		if True is self.scpPushFromLocalFlag or (None is self.scpPushFromLocalFlag and  self.scpPushFromLocalTest()):
 			# ssh port
@@ -959,29 +980,33 @@ class PySSH:
 				if 0 == cmp('.', sshHostPath[0]) and (1 == len(sshHostPath) or (1 < len(sshHostPath) and 0 == cmp('/', sshHostPath[1]))):
 					getCurDirPathRet = self.getCurrentDirPath()
 					if 0 != getCurDirPathRet['code']:
-						return {'code': getCurDirPathRet['code'], 'output':'SCP_LOCAL_PULL_PUSH, can not get current dir path on ssh host, reason:%r' % getCurDirPathRet['output']}
+						return {'code': getCurDirPathRet['code'], 'output':'can not get current dir path on ssh host, reason:%r' % getCurDirPathRet['output']}
 					else:
 						tSPath = "%s/%s" % (getCurDirPathRet['path'], sshHostPath[2:])
 				elif 0 == cmp('~', sshHostPath[0]) and (1 == len(sshHostPath) or (1 < len(sshHostPath) and 0 == cmp('/', sshHostPath[1]))):
 					getHomePathRet = self.getHomePath()
 					if 0 != getHomePathRet['code']:
-						return {'code': getCurDirPathRet['code'], 'output':'SCP_LOCAL_PULL_PUSH, can not get current dir path on ssh host, reason:%r' % getCurDirPathRet['output']}
+						return {'code': getCurDirPathRet['code'], 'output':'can not get current dir path on ssh host, reason:%r' % getCurDirPathRet['output']}
 					else:
 						tSPath = "%s/%s" % (getHomePathRet['path'], sshHostPath[2:])
 				elif sshHostPath.startswith('..') and (2 == len(sshHostPath) or (2 < len(sshHostPath) and 0 == cmp('/', sshHostPath[2]))):
 					getCurDirPathRet = self.getCurrentDirPath()
 					if 0 != getCurDirPathRet['code']:
-						return {'code': getCurDirPathRet['code'], 'output':'SCP_LOCAL_PULL_PUSH, can not get current dir path on ssh host, reason:%r' % getCurDirPathRet['output']}
+						return {'code': getCurDirPathRet['code'], 'output':'can not get current dir path on ssh host, reason:%r' % getCurDirPathRet['output']}
 					else:
 						tSPath = "%s/%s" % (getCurDirPathRet['path'], sshHostPath)
 				elif sshHostPath.startswith('$HOME') and (5 == len(sshHostPath) or (5 < len(sshHostPath) and 0 == cmp('/', sshHostPath[5]))):
 					getHomePathRet = self.getHomePath()
 					if 0 != getHomePathRet['code']:
-						return {'code': getHomePathRet['code'], 'output':'SCP_LOCAL_PULL_PUSH, can not get home path on ssh host, reason:%r' % getHomePathRet['output']}
+						return {'code': getHomePathRet['code'], 'output':'can not get home path on ssh host, reason:%r' % getHomePathRet['output']}
 					else:
 						tSPath = "%s/%s" % (getHomePathRet['path'], sshHostPath[6:])
 				else:
 					return {'code':-24, 'output':'can not get absolute ssh host path:%s' % sshHostPath}
+			# localIsdir
+			tR = ""
+			if localIsdir:
+				tR = "-r"
 			scpPushCommand = "scp %(R)s %(P)s %(localPath)s %(sshUser)s@%(sshHost)s:%(sshHostPath)s" % {
 				'R' : tR,
 				'P' : tSPort,
@@ -993,13 +1018,42 @@ class PySSH:
 			scpRet = self.scpPushFromLocal(scpCommand=scpPushCommand)
 			if 0 != scpRet['code']:
 				logger.error('hostName:%s, scp from local push failed, command:%s, result:%r', self.hostName, scpPushCommand, scpRet)
-				return {'code':scpRet['code'], 'output':'SCP_LOCAL_PULL_PUSH, scp push from local failed, reason:%r' % scpRet['output']}
+				return {'code':scpRet['code'], 'output':'scp push from local failed, reason:%r' % scpRet['output']}
 			else:
 				logger.info('hostName:%s, scp from local push success, command:%s, result:%r', self.hostName, scpPushCommand, scpRet)
-				return {'code':0, 'output':'SCP_LOCAL_PULL_PUSH, scp push from local success'}
+				return {'code':0, 'output':'scp push from local success'}
+		else:
+			return {'code':-5020, 'output':'scp push from local failed, can not pass test'}
+			
+	
+	def scpFromLocalPullPush(self,  localPath, sshHostPath, localPassword=None, localIsdir=False, localIntf=None, localPort=None):
+		pullRet = self.scpFromLocalPull(localPath=localPath, sshHostPath=sshHostPath, localPassword=localPassword, localIsdir=localIsdir, localIntf=localIntf, localPort=localPort)
+		if 0 == pullRet['code']:
+			return pullRet
+		else:
+			self.scpPullFromLocalFlag = False
+			pushRet = self.scpFromLocalPush(localPath=localPath, sshHostPath=sshHostPath, localIsdir=localIsdir)
+			if 0 == pushRet['code']:
+				return pushRet
+			else:
+				self.scpPushFromLocalFlag = False
+		logger.error('hostName:%s, SCP_LOCAL_PULL_PUSH both direction failed', self.hostName)
+		return {'code':-5017, 'output':'both direction failed'}
 
-		logger.error('hostName:%s, both test failed', self.hostName)
-		return {'code':-5017, 'output':'both test failed'}
+	def scpFromLocalPushPull(self,  localPath, sshHostPath, localPassword=None, localIsdir=False, localIntf=None, localPort=None):
+		pushRet = self.scpFromLocalPush(localPath=localPath, sshHostPath=sshHostPath, localIsdir=localIsdir)
+		if 0 == pushRet['code']:
+			return pushRet
+		else:
+			self.scpPushFromLocalFlag = False
+			pullRet = self.scpFromLocalPull(localPath=localPath, sshHostPath=sshHostPath, localPassword=localPassword, localIsdir=localIsdir, localIntf=localIntf, localPort=localPort)
+			if 0 == pullRet['code']:
+				return pullRet
+			else:
+				self.scpPullFromLocalFlag = False
+		logger.error('hostName:%s, SCP_LOCAL_PUSH_PULL both direction failed', self.hostName)
+		return {'code':-5021, 'output':'both direction failed'}
+
 
 
 
