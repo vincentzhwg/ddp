@@ -428,7 +428,7 @@ class SSHHost(threading.Thread):
 				else:
 					loginRetryCounter += 1
 					logger.warning('threadName:%s, login failed, login result:%r, but retry again, retryTimes:%d, retryCounter:%d', self.getName(), loginRet, DDP_LOGIN_RETRY_TIMES, loginRetryCounter)
-					self.printQueue.put( ['host: %s' % self.host['hostName'], 'msg: login failed, login result:%r, but retry again, retryTimes:%d, retryCounter:%d' % (loginRet, DDP_LOGIN_RETRY_TIMES, loginRetryCounter), ] )
+					#self.printQueue.put( ['host: %s' % self.host['hostName'], 'msg: login failed, login result:%r, but retry again, retryTimes:%d, retryCounter:%d' % (loginRet, DDP_LOGIN_RETRY_TIMES, loginRetryCounter), ] )
 					self.opLogList.append( ['@@@LOGIN FAILED@@@', 'login error code:%d' % loginRet['code'], 'reason:%r' % loginRet['output'], 'msg: retry again, retryTimes:%d, retryCounter:%d' % (DDP_LOGIN_RETRY_TIMES, loginRetryCounter)] )
 					continue
 			else:
@@ -616,8 +616,8 @@ def dealResultQueue(cmdsData=None, quietFiles=False, successHostsFile=None, erro
 		tCmdList = re.split(r';|\r?\n', cmdsData)
 		for line in tCmdList:
 			if line.strip() and not line.strip().startswith('#'):
-				successResultList.append( line )
-				errorResultList.append( line )
+				successResultList.append( '#%s' % line )
+				errorResultList.append( '#%s' % line )
 
 	# insert decorate lines
 	successResultList.append('#-----------------------------------------------------------------------------------')
