@@ -132,6 +132,33 @@ def p_cmd(p):
 				raise Exception('NTOL can not be used in scp command in lineno:%d' % p.lineno(2))
 		p[0] = CmdNode(category='cmd', command=p[3], lineno=p.lineno(2), child=None, adjs=p[1])
 
+
+
+def p_cmd_scp_local_push_pull(p):
+	'''cmd : adjs SEP SCP_LOCAL_PUSH_PULL SEP scp_adjs
+		   | SCP_LOCAL_PUSH_PULL SEP scp_adjs'''
+	if 4 == len(p):
+		p[0] = CmdNode(category='cmd', command='pyssh_scp_local_push_pull', lineno=p.lineno(2), child=None, adjs=p[3])
+	elif 4 == len(p):
+		p[0] = CmdNode(category='cmd', command='pyssh_scp_local_push_pull', lineno=p.lineno(2), child=None, adjs=dict(p[1], **(p[5])))
+	tNotNeedKeys = ['LOCAL_USER', 'SCP_PWD', 'TL', 'NTOL']
+	for k in tNotNeedKeys:
+		if k in p[0].adjs:
+			raise Exception('%s should not be used in SCP_LOCAL_PUSH_PULL in lineno:%d' % (k, p.lineno(2)))
+	tNeedKeys = ['LOCAL_PATH', 'SSH_HOST_PATH']	
+	for k in tNeedKeys:
+		if not k in p[0].adjs:
+			raise Exception('%s must be used in SCP_LOCAL_PUSH_PULL in lineno:%d' % (k, p.lineno(2)))
+	if not 'LOCAL_ISDIR' in p[0].adjs:
+		p[0].adjs['LOCAL_ISDIR'] = False
+	if not 'LOCAL_PORT' in p[0].adjs:
+		p[0].adjs['LOCAL_PORT'] = None
+	if not 'LOCAL_PWD' in p[0].adjs:
+		p[0].adjs['LOCAL_PWD'] = None
+
+
+
+
 def p_cmd_scp_local_pull_push(p):
 	'''cmd : adjs SEP SCP_LOCAL_PULL_PUSH SEP scp_adjs
 		   | SCP_LOCAL_PULL_PUSH SEP scp_adjs'''
@@ -151,6 +178,8 @@ def p_cmd_scp_local_pull_push(p):
 		p[0].adjs['LOCAL_ISDIR'] = False
 	if not 'LOCAL_PORT' in p[0].adjs:
 		p[0].adjs['LOCAL_PORT'] = None
+	if not 'LOCAL_PWD' in p[0].adjs:
+		p[0].adjs['LOCAL_PWD'] = None
 
 
 def p_scp_adjs(p):
