@@ -160,15 +160,28 @@ class PySSH:
 			    #self.expect(EOF)
 			self.sshClient.close(force=True)
 		except:
-			logger.exception("threadName:%s, occurs exception when closing")
+			logger.exception("hostName:%s, occurs exception when closing", self.hostName)
 
-	def execCommand(self, command, commandExt = dict(), timeout = -1):
+	def getCommandOutput(self, originOutput):
+		# originOutput often is self.sshClient.before
+
+		# filter scp timeout output after sigint signal
+		tStr = re.sub(r'warning:.*Connection Timed Out\r\r\n', '', originOutput)
+
+		commandOutput = self.exceptFirstLine( tStr )
+		return commandOutput
+
+	def execCommand(self, command, commandExt = None, timeout = -1):
 		"""
 		if the value of timeout is -1, then expect will use self.timeout
 		code:
 		0 : success
 		"""
 		logger.info("hostName:%s, parameter:command:%s, timeout:%r", self.hostName, command, timeout)
+
+		# deal parameters
+		if None is commandExt: commandExt = dict()
+			
 		if 0 == cmp('pyssh_scp_local_pull_push', command) or 0 == cmp('pyssh_scp_local_push_pull', command):
 			tLocalIntf = LOCAL_INTERFACE
 			if 'LOCAL_INTF' in commandExt:
@@ -186,6 +199,17 @@ class PySSH:
 				return self.scpFromLocalPullPush(localPassword=tLocalPwd, localPath=commandExt['LOCAL_PATH'], sshHostPath=commandExt['SSH_HOST_PATH'], localIsdir=tLocalIsDir, localIntf=tLocalIntf, localPort=tLocalPort)
 			elif 0 == cmp('pyssh_scp_local_push_pull', command):
 				return self.scpFromLocalPushPull(localPassword=tLocalPwd, localPath=commandExt['LOCAL_PATH'], sshHostPath=commandExt['SSH_HOST_PATH'], localIsdir=tLocalIsDir, localIntf=tLocalIntf, localPort=tLocalPort)
+		elif 0 == cmp('pyssh_add_user', command):
+			tUserPassword = None
+			if 'USER_PWD' in commandExt:
+				tUserPassword = commandExt['USER_PWD']
+			tUserHomePath = None
+			if 'USER_HOME' in commandExt:
+				tUserHomePath = commandExt['USER_HOME']
+			tGroupName = None
+			if 'GROUP_NAME' in commandExt:
+				tGroupName = commandExt['GROUP_NAME']
+			return self.addUser(userName=commandExt['USER_NAME'], userPassword=tUserPassword, userHomePath=tUserHomePath, groupName=tGroupName)
 		elif command.startswith('scp'):
 			scpCommand = command
 			if 'SCP_PWD' in commandExt:
@@ -194,18 +218,12 @@ class PySSH:
 				scpPassword = None
 			return self.execScpCommand(scpCommand, scpPassword, timeout=SCP_WAIT_TIMEOUT)
 		else:
-			# clear output before exec command
-			#self.clearOutputBuffer()
-
 			self.sshClient.sendline(command)
 			#time.sleep(SLEEP_TIME_AFTER_SENDLINE)
 			i = self.sshClient.expect([self.prompt, pexpect.EOF, pexpect.TIMEOUT], timeout)
 			logger.info("hostName:%(hostName)s, command:%(command)s, commandExt:%(commandExt)r, expect['%(prompt)s', pexpect.EOF, pexpect.TIMEOUT], timeout=%(timeout)r, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'command':command, 'commandExt':commandExt, 'prompt':self.prompt, 'timeout':timeout, 'index':i, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
 			if i == 0:
-				strBefore = self.sshClient.before
-				# filter scp timeout output after sigint signal
-				strBefore = re.sub(r'warning:.*Connection Timed Out\r\r\n', '', strBefore)
-				commandOutput = self.exceptFirstLine(strBefore)
+				commandOutput = self.getCommandOutput( self.sshClient.before )
 
 				if command.startswith('nohup') and self.sshClient.buffer:
 					logger.info('hostName:%s, command starts with nohup, buffer:%r', self.hostName, self.sshClient.buffer)
@@ -223,7 +241,8 @@ class PySSH:
 						return {'code':0, 'output':commandOutput}
 					else:
 						logger.error('hostName:%s, exec command finished, but exit value is not 0, command:%s, output:%r', self.hostName, command, commandOutput)
-						return {'code':-6009, 'output':'exec command fininshed, but its exit valus is not 0, command:%s, exit value:%r' % (command, exitRet['output'])}
+						#return {'code':-6009, 'output':'exec command fininshed, but its exit valus is not 0, command:%s, exit value:%r, reason:%r' % (command, exitRet['output'], commandOutput)}
+						return {'code':-6009, 'output':commandOutput}
 			elif i == 1:
 				logger.error("hostName:%s, execute command, EOF occur, then send control signal C", self.hostName)
 				#self.sshClient.sendcontrol('c')
@@ -919,12 +938,12 @@ class PySSH:
 	def scpFromLocalPull(self,  localPath, sshHostPath, localPassword=None, localIsdir=False, localIntf=None, localPort=None):
 		if None is localIntf:
 			localIntf = LOCAL_INTERFACE
-		# get local username
+		# get local user name
 		try:
 			localUser = getpass.getuser()
 		except:
-			logger.exception('hostName:%s, get local username occurs exception', self.hostName)
-			return {'code':-5001, 'output':'get local username occurs exception'}
+			logger.exception('hostName:%s, get local user name occurs exception', self.hostName)
+			return {'code':-5001, 'output':'get local user name occurs exception'}
 		# get local ip address
 		try:
 			localIP = util.getIP( localIntf )
@@ -1053,6 +1072,122 @@ class PySSH:
 				self.scpPullFromLocalFlag = False
 		logger.error('hostName:%s, SCP_LOCAL_PUSH_PULL both direction failed', self.hostName)
 		return {'code':-5021, 'output':'both direction failed'}
+
+	def userExists(self, userName):
+		'''
+		output: 0 yes; other no
+		'''
+		userExistsCommand = 'id %s' % userName.strip()
+		self.sshClient.sendline( userExistsCommand )
+		i = self.sshClient.expect([self.prompt, pexpect.EOF, pexpect.TIMEOUT], timeout=PYSSH_DEFAULT_TIMEOUT)
+		logger.info("hostName:%(hostName)s, command:%(command)s, expect['%(prompt)s', pexpect.EOF, pexpect.TIMEOUT], timeout=%(timeout)d, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'command':userExistsCommand, 'prompt':self.prompt, 'timeout':PYSSH_DEFAULT_TIMEOUT, 'index':i, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
+		if i == 0:
+			#userExistsOutput = self.getCommandOutput( self.sshClient.before )
+			exitRet = self.getPreCommandExitValue()
+			if 0 != exitRet['code']:
+				logger.error('hostName:%s, error occurs when getting exit value for command:%s, reason:%r', self.hostName, userExistsCommand, exitRet)
+				return {'code':-6018, 'output':'error occurs when getting exit value for command:%s, reason:%r' % (userExistsCommand, exitRet['output'])}
+			else:
+				if 0 == exitRet['output']:
+					return {'code':0, 'output':0}
+				else:
+					return {'code':0, 'output':exitRet['output']}
+		elif i == 1:
+			logger.error("hostName:%s, command:%s, EOF occur", self.hostName, userExistsCommand)
+			self.clearOutputBuffer()
+			return {'code':-6019, 'output':'EOF occurs when executing command:%s' % userExistsCommand}
+		elif i == 2:
+			logger.error("hostName:%s, command:%s, timeout[%d] occur, then send control signal C", self.hostName, userExistsCommand, PYSSH_DEFAULT_TIMEOUT)
+			self.sshClient.sendintr()
+			self.clearOutputBuffer()
+			return {'code':-6020, 'output':'timeout[%d] occurs when executing command:%s' % (PYSSH_DEFAULT_TIMEOUT, userExistsCommand)}
+	
+
+	def changeUserPassword(self, userName, userPassword):
+		changePasswdCommand = "passwd %s" % userName
+		self.sshClient.sendline( changePasswdCommand )
+		i = self.sshClient.expect(['(?i)new.*password', self.prompt, pexpect.EOF, pexpect.TIMEOUT], timeout=PYSSH_DEFAULT_TIMEOUT)
+		logger.info("hostName:%(hostName)s, command:%(command)s, expect['(?i)new.*password', '%(prompt)s', pexpect.EOF, pexpect.TIMEOUT], timeout=%(timeout)d, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'command':changePasswdCommand, 'prompt':self.prompt, 'timeout':PYSSH_DEFAULT_TIMEOUT, 'index':i, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
+		if i == 0:
+			self.sshClient.sendline( userPassword )
+			p = self.sshClient.expect(['(?i)retype new.*password', self.prompt, pexpect.EOF, pexpect.TIMEOUT], timeout=PYSSH_DEFAULT_TIMEOUT)
+			logger.info("hostName:%(hostName)s, command:%(command)s, expect['(?i)retype new.*password', '%(prompt)s', pexpect.EOF, pexpect.TIMEOUT], timeout=%(timeout)d, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'command':changePasswdCommand, 'prompt':self.prompt, 'timeout':PYSSH_DEFAULT_TIMEOUT, 'index':p, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
+			if p == 0:
+				self.sshClient.sendline( userPassword )
+				q = self.sshClient.expect([self.prompt, pexpect.EOF, pexpect.TIMEOUT], timeout=PYSSH_DEFAULT_TIMEOUT)
+				logger.info("hostName:%(hostName)s, command:%(command)s, expect['%(prompt)s', pexpect.EOF, pexpect.TIMEOUT], timeout=%(timeout)d, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'command':changePasswdCommand, 'prompt':self.prompt, 'timeout':PYSSH_DEFAULT_TIMEOUT, 'index':q, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
+				#if q == 0:
+				#	logger.error("hostName:%s, command:%s, error occurs when adding user, still need password after giving password 2 times, then send control signal C", self.hostName, changePasswdCommand)
+				#	self.sshClient.sendintr()
+				#	self.clearOutputBuffer()
+				#	return {'code':-6015, 'output':'error occurs when adding user, still need password after giving password 2 times'}
+
+		if 1 == i or 1 == p or 0 == q:
+			changePasswdOutput = self.getCommandOutput( self.sshClient.before )
+			exitRet = self.getPreCommandExitValue()
+			if 0 != exitRet['code']:
+				logger.error('hostName:%s, error occurs when getting exit value for command:%s, reason:%r', self.hostName, changePasswdCommand, exitRet)
+				return {'code':-6013, 'output':'error occurs when getting exit value for command:%s, reason:%r' % (changePasswdCommand, exitRet['output'])}
+			else:
+				if 0 == exitRet['output']:
+					return {'code':0, 'output':changePasswdOutput}
+				else:
+					logger.error('hostName:%s, exec command finished, but exit value is not 0, command:%s, output:%r, getExitValueRet:%r', self.hostName, changePasswdCommand, changePasswdOutput, exitRet)
+					return {'code':-6014, 'output':'exec command fininshed, but its exit valus is not 0, command:%s, exit value:%r' % (changePasswdCommand, exitRet['output'])}
+		if 2 == i or 2 == p or 1 == q:
+			logger.error("hostName:%s, command:%s, EOF occur", self.hostName, changePasswdCommand)
+			self.clearOutputBuffer()
+			return {'code':-6016, 'output':'EOF occurs when executing command:%s' % changePasswdCommand}
+		if 3 == i or 3 == p or 2 == q:
+			logger.error("hostName:%s, command:%s, timeout[%d] occur, then send control signal C", self.hostName, changePasswdCommand, PYSSH_DEFAULT_TIMEOUT)
+			self.sshClient.sendintr()
+			self.clearOutputBuffer()
+			return {'code':-6017, 'output':'timeout[%d] occurs when executing command:%s' % (PYSSH_DEFAULT_TIMEOUT, changePasswdCommand)}
+
+
+
+	def addUser(self, userName, userPassword=None, userHomePath=None, groupName=None):
+		if None is userName or not userName.strip():
+			return {'code':-6011, 'output':'error when creating user, userName can not be empty'}
+		# whether user alreay exists
+		userExistsRet = self.userExists( userName )
+		if 0 != userExistsRet['code']:
+			return userExistsRet
+		if 0 == userExistsRet['output']:
+			# already exists
+			return {'code':-6021, 'output':'user %s already exists' % userName}
+		else:
+			# not exists
+			# deal home path
+			if None is not userHomePath and userHomePath.strip():
+				userHomePath = userHomePath.strip()
+				while 0 == cmp('/', userHomePath[-1]):
+					userHomePath = userHomePath[0:-1]
+				# whether exists
+				if not self.testPathExists( userHomePath ):
+					baseDir = os.path.dirname( userHomePath )
+					execRet = self.execCommand( 'mkdir -p %s' % baseDir )
+					if 0 != execRet['code']:
+						logger.error('hostName:%s, command:%s, execRet:%r', self.hostName, 'mkdir -p %s' % baseDir, execRet)
+						return {'code':-6010, 'output':'error when creating user home directory, reason:%r' % execRet['output']}
+			# add user
+			addUserCommand = 'useradd "%s"'  % userName
+			if None is not userHomePath and userHomePath:
+				addUserCommand = '%s -m -d %s' % (addUserCommand, userHomePath)
+			if None is not groupName and groupName.strip():
+				addUserCommand = '%s -g %s' % (addUserCommand, groupName)
+			execRet = self.execCommand( addUserCommand )
+			if 0 != execRet['code']:
+				logger.error('hostName:%s, command:%s, execRet:%r', self.hostName, addUserCommand, execRet)
+				return {'code':-6012, 'output':'error when adding user, reason:%r' % execRet['output']}
+
+		# whether password
+		if None is userPassword or not userPassword.strip():
+			return execRet
+		else:
+			return self.changeUserPassword(userName=userName, userPassword=userPassword)
+			
+
 
 
 

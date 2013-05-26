@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 #-*- coding:utf-8 -*-
-
-# date:2013-01-10
+	
 # author: vinczhang
 
 import sys, os
@@ -24,7 +23,7 @@ DDP_ROOT_DIR = os.path.dirname(os.path.realpath(__file__))
 os.environ['DDP_ROOT_DIR'] = DDP_ROOT_DIR
 
 loggingConfigFile = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'conf/logging.conf')
-logging.config.fileConfig( loggingConfigFile, disable_existing_loggers = False )
+logging.config.fileConfig( loggingConfigFile, disable_existing_loggers = False)
 #logging.config.fileConfig( loggingConfigFile )
 logger = logging.getLogger( __name__ )
 
@@ -264,10 +263,12 @@ class OPLogProcess(Process):
 
 #####################################################################################################################
 class SSHHost(Process):
-	def __init__(self, host, firstCmdNode, cmdVars=dict(), retryTimes=None, quietMode=False, outputFileQuietMode=True):
+	def __init__(self, host, firstCmdNode, cmdVars=None, retryTimes=None, quietMode=False, outputFileQuietMode=True):
 		Process.__init__(self)
+		
 		self.host = copy.deepcopy( host )
 		self.firstCmdNode = firstCmdNode
+
 
 		self.quietMode = quietMode
 		self.outputFileQuietMode = outputFileQuietMode
@@ -878,7 +879,7 @@ def checkArgs(hostsFile=None, cmdsFile=None, output=None, successHostsFile=None,
 
 def argsDefine():
 	argsParser = argparse.ArgumentParser(prog="ddp", description = "ddp is a python ssh script")
-	argsParser.add_argument('-v', '--version', action='version', version='%(prog)s, author:vincentzhwg@gmail.com, version: 1.1.1')
+	argsParser.add_argument('-v', '--version', action='version', version='%(prog)s, author:vincentzhwg@gmail.com, version: 1.1.2')
 	argsParser.add_argument('-l', '--hostsFile', help="the path of hostsFile, this parameter can not used with hostsString at the same time")
 	argsParser.add_argument('-s', '--hostsString', help="hosts string, this parameter can not used with hostsFile at the same time")
 	argsParser.add_argument('-c', '--cmdsFile', help="the path of cmdsFile, this parameter can not used with execCmds at the same time")
@@ -896,8 +897,9 @@ def argsDefine():
 
 
 
-def ddpRun(hostList, firstCmdNode, retryTimes=None, workersNO=None, cmdVars=dict(), quietMode=False, outputFileQuietMode=True):
+def ddpRun(hostList, firstCmdNode, retryTimes=None, workersNO=None, cmdVars=None, quietMode=False, outputFileQuietMode=True):
 	# deal parameters
+	if None is cmdVars: cmdVars = dict()
 	if None is retryTimes: retryTimes = DDP_RETRY_TIMES
 	if None is workersNO: workersNO = DDP_RUNNING_HOST
 
@@ -1027,18 +1029,6 @@ def main(hostsFile=None, cmdsFile=None, hostsString=None, execCmds=None, output=
 				print retDict
 			return retDict
 	
-
-	# start print worker if not in quiet mode
-	if not quiet:
-		printWorker = PrintProcess()
-		printWorker.start()
-		logger.info("start print worker")
-	# start oplog write worker if -o
-	if output:
-		opLogWorker = OPLogProcess( output )
-		opLogWorker.start()
-		logger.info("start opLog worker")
-
 	# hosts and cmds source
 	if None is hostsFile and not None is hostsString:
 		hostsData = hostsString	
@@ -1112,6 +1102,18 @@ def main(hostsFile=None, cmdsFile=None, hostsString=None, execCmds=None, output=
 	else:
 		firstCmdNode = getRet['cmdNode']
 		logger.info("get cmds from cmds file [%s] success, cmds are following:%s", cmdsFile, firstCmdNode.depthTraversal())
+
+	# start print worker if not in quiet mode
+	if not quiet:
+		printWorker = PrintProcess()
+		printWorker.start()
+		logger.info("start print worker")
+	# start oplog write worker if -o
+	if output:
+		opLogWorker = OPLogProcess( output )
+		opLogWorker.start()
+		logger.info("start opLog worker")
+
 
 	# start result worker
 	resultWorker = ResultProcess(cmdsData=cmdsData, quietFiles=quietFiles, successHostsFile=successHostsFile, errorHostsFile=errorHostsFile)
