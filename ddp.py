@@ -276,7 +276,7 @@ class OPLogWriteThread(threading.Thread):
 
 #####################################################################################################################
 class SSHHost(threading.Thread):
-	def __init__(self, host, firstCmdNode, cmdVars=dict(), retryTimes=None):
+	def __init__(self, host, firstCmdNode, cmdVars=None, retryTimes=None):
 		threading.Thread.__init__(self)
 		self.host = copy.deepcopy( host )
 		self.firstCmdNode = firstCmdNode
@@ -824,7 +824,7 @@ def checkArgs(hostsFile=None, cmdsFile=None, output=None, successHostsFile=None,
 
 def argsDefine():
 	argsParser = argparse.ArgumentParser(prog="ddp", description = "ddp is a python ssh script")
-	argsParser.add_argument('-v', '--version', action='version', version='%(prog)s, author:vincentzhwg@gmail.com, version: 1.0.1')
+	argsParser.add_argument('-v', '--version', action='version', version='%(prog)s, author:vincentzhwg@gmail.com, version: 1.0.2')
 	argsParser.add_argument('-l', '--hostsFile', help="the path of hostsFile, this parameter can not used with hostsString at the same time")
 	argsParser.add_argument('-s', '--hostsString', help="hosts string, this parameter can not used with hostsFile at the same time")
 	argsParser.add_argument('-c', '--cmdsFile', help="the path of cmdsFile, this parameter can not used with execCmds at the same time")
@@ -842,8 +842,9 @@ def argsDefine():
 
 
 
-def ddpRun(hostList, firstCmdNode, retryTimes=None, threadsNO=None, cmdVars=dict()):
+def ddpRun(hostList, firstCmdNode, retryTimes=None, threadsNO=None, cmdVars=None):
 	# deal parameters
+	if None is cmdVars: cmdVars = dict()
 	if None is retryTimes: retryTimes = DDP_RETRY_TIMES
 	if None is threadsNO: threadsNO = DDP_RUNNING_HOST
 
@@ -978,16 +979,6 @@ def main(hostsFile=None, cmdsFile=None, hostsString=None, execCmds=None, output=
 				print retDict
 			return retDict
 
-	# start print thread if not in quiet mode
-	if not quiet:
-		printThread = PrintThread()
-		logger.info("start print thread")
-		printThread.start()
-	# start oplog write thread if -o
-	if output:
-		opLogWriteThread = OPLogWriteThread( output )
-		opLogWriteThread.start()
-
 	# hosts and cmds source
 	if None is hostsFile and not None is hostsString:
 		hostsData = hostsString	
@@ -1023,7 +1014,6 @@ def main(hostsFile=None, cmdsFile=None, hostsString=None, execCmds=None, output=
 			if printResult:
 				print retDict
 			return retDict
-
 
 	# get hostList
 	getRet = getHostList(hostsData)
@@ -1061,6 +1051,16 @@ def main(hostsFile=None, cmdsFile=None, hostsString=None, execCmds=None, output=
 	else:
 		firstCmdNode = getRet['cmdNode']
 		logger.info("get cmds from cmds file [%s] success, cmds are following:%s", cmdsFile, firstCmdNode.depthTraversal())
+
+	# start print thread if not in quiet mode
+	if not quiet:
+		printThread = PrintThread()
+		logger.info("start print thread")
+		printThread.start()
+	# start oplog write thread if -o
+	if output:
+		opLogWriteThread = OPLogWriteThread( output )
+		opLogWriteThread.start()
 
 	# execute ssh command
 	ddpRun(hostList, firstCmdNode, retryTimes=retryTimes, threadsNO=threadsNO)

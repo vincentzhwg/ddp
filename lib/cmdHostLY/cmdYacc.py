@@ -1,9 +1,7 @@
 #!/usr/bin/env python
 #-*- coding:utf8 -*-
 
-
 import sys, os
-import pprint
 import re
 
 libPath = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'lib')
@@ -225,7 +223,60 @@ def p_scp_adjunct(p):
 		raise Exception('LOCAL_PATH can not be empty in lineno:%d' % p.lineno(2))
 	if 'SSH_HOST_PATH' in p[0] and not p[0]['SSH_HOST_PATH']:
 		raise Exception('SSH_HOST_PATH can not be empty in lineno:%d' % p.lineno(2))
+
+def p_cmd_add_user(p):
+	'''cmd : ADD_USER SEP add_user_adjs
+		   | adjs SEP ADD_USER SEP add_user_adjs'''
+	if 4 == len(p):
+		p[0] = CmdNode(category='cmd', command='pyssh_add_user', lineno=p.lineno(2), child=None, adjs=p[3])
+	elif 4 == len(p):
+		p[0] = CmdNode(category='cmd', command='pyssh_add_user', lineno=p.lineno(2), child=None, adjs=dict(p[1], **(p[5])))
+	tNotNeedKeys = ['LOCAL_USER', 'SCP_PWD', 'TL', 'NTOL']
+	for k in tNotNeedKeys:
+		if k in p[0].adjs:
+			raise Exception('%s should not be used in ADD_USER in lineno:%d' % (k, p.lineno(2)))
+	tNeedKeys = ['USER_NAME',]	
+	for k in tNeedKeys:
+		if not k in p[0].adjs:
+			raise Exception('%s must be used in ADD_USER in lineno:%d' % (k, p.lineno(2)))
+	if not 'USER_PWD' in p[0].adjs:
+		p[0].adjs['USER_PWD'] = None
+	if not 'USER_HOME' in p[0].adjs:
+		p[0].adjs['USER_HOME'] = None
+	if not 'GROUP_NAME' in p[0].adjs:
+		p[0].adjs['GROUP_NAME'] = None
 	
+	
+def p_add_user_adjs(p):
+	'''add_user_adjs : add_user_adjunct
+					 | add_user_adjs SEP add_user_adjunct'''
+	if 2 == len(p):
+		p[0] = p[1]
+	elif 4 == len(p):
+		for k in p[3].keys():
+			if 0 != cmp('lineno', k) and k in p[1]:
+				raise Exception('%s used duplicately in lineno:%d' % (k, p.lineno(2)))
+		p[0] = dict(p[1], **(p[3]))
+
+
+
+def p_add_user_adjunct(p):
+	'''add_user_adjunct : USER_NAME SEP STRING
+						| USER_PWD SEP STRING
+						| USER_HOME SEP STRING
+						| GROUP_NAME SEP STRING'''
+	if 4 == len(p) and 0 == cmp('USER_NAME', p[1]):
+		p[0] = {'USER_NAME' : p[3].strip()}
+	elif 4 == len(p) and 0 == cmp('USER_PWD', p[1]):
+		p[0] = {'USER_PWD' : p[3]}
+	elif 4 == len(p) and 0 == cmp('USER_HOME', p[1]):
+		p[0] = {'USER_HOME' : p[3].strip()}
+	elif 4 == len(p) and 0 == cmp('GROUP_NAME', p[1]):
+		p[0] = {'GROUP_NAME' : p[3].strip()}
+	noEmptyList = ['USER_NAME', 'USER_HOME', 'GROUP_NAME']
+	for item in noEmptyList:
+		if item in p[0] and not p[0][item]:
+			raise Exception('%s can not be empty in lineno:%d' % (item, p.lineno(2)))
 	
 def p_adjs(p):
 	'''adjs : adjunct
