@@ -50,7 +50,7 @@ def t_BLANK(t):
 	pass
 
 def t_EOL(t):
-	r'\n+'
+	r'(\r?\n)+'
 	t.lexer.lineno += len(t.value)
 	return t
 
