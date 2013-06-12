@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 #-*- coding:utf8 -*-
 
+#import traceback
 import sys, os
 import re
 
@@ -117,17 +118,7 @@ def p_cmd(p):
 		   | COMMAND'''
 	if 2 == len(p):
 		p[0] = CmdNode(category='cmd', command=p[1], lineno=p.lineno(1), child=None, adjs=dict())
-		#if p[1].startswith('scp'):
-		#	raise Exception("scp command should have SCP_PWD in lineno:%d" % p.lineno(1))
 	elif 4 == len(p):
-		if re.match(r'^scp[ \t]+.*', p[3]):
-		#if p[3].startswith('scp'):
-			#if not 'SCP_PWD' in p[1]:
-			#	raise Exception("scp command should have SCP_PWD in lineno:%d" % p.lineno(2))
-			if 'TL' in p[1]:
-				raise Exception('TL can not be used in scp command in lineno:%d' % p.lineno(2))
-			if 'NTOL' in p[1]:
-				raise Exception('NTOL can not be used in scp command in lineno:%d' % p.lineno(2))
 		p[0] = CmdNode(category='cmd', command=p[3], lineno=p.lineno(2), child=None, adjs=p[1])
 
 
@@ -137,9 +128,9 @@ def p_cmd_scp_local_push_pull(p):
 		   | SCP_LOCAL_PUSH_PULL SEP scp_adjs'''
 	if 4 == len(p):
 		p[0] = CmdNode(category='cmd', command='pyssh_scp_local_push_pull', lineno=p.lineno(2), child=None, adjs=p[3])
-	elif 4 == len(p):
+	elif 6 == len(p):
 		p[0] = CmdNode(category='cmd', command='pyssh_scp_local_push_pull', lineno=p.lineno(2), child=None, adjs=dict(p[1], **(p[5])))
-	tNotNeedKeys = ['LOCAL_USER', 'SCP_PWD', 'TL', 'NTOL']
+	tNotNeedKeys = ['LOCAL_USER', 'SCP_PWD',]
 	for k in tNotNeedKeys:
 		if k in p[0].adjs:
 			raise Exception('%s should not be used in SCP_LOCAL_PUSH_PULL in lineno:%d' % (k, p.lineno(2)))
@@ -162,9 +153,9 @@ def p_cmd_scp_local_pull_push(p):
 		   | SCP_LOCAL_PULL_PUSH SEP scp_adjs'''
 	if 4 == len(p):
 		p[0] = CmdNode(category='cmd', command='pyssh_scp_local_pull_push', lineno=p.lineno(2), child=None, adjs=p[3])
-	elif 4 == len(p):
+	elif 6 == len(p):
 		p[0] = CmdNode(category='cmd', command='pyssh_scp_local_pull_push', lineno=p.lineno(2), child=None, adjs=dict(p[1], **(p[5])))
-	tNotNeedKeys = ['LOCAL_USER', 'SCP_PWD', 'TL', 'NTOL']
+	tNotNeedKeys = ['LOCAL_USER', 'SCP_PWD',]
 	for k in tNotNeedKeys:
 		if k in p[0].adjs:
 			raise Exception('%s should not be used in SCP_LOCAL_PULL_PUSH in lineno:%d' % (k, p.lineno(2)))
@@ -201,7 +192,7 @@ def p_scp_adjunct(p):
 				  | LOCAL_ISDIR'''
 	if 2 == len(p) and 'LOCAL_ISDIR' == p[1]:
 		p[0] = {'LOCAL_ISDIR' : True }
-	if 4 == len(p) and 'LOCAL_INTF' == p[1]:
+	elif 4 == len(p) and 'LOCAL_INTF' == p[1]:
 		p[0] = { 'LOCAL_INTF' : p[3].strip() }
 	elif 4 == len(p) and 'LOCAL_PORT' == p[1]:
 		p[0] = { 'LOCAL_PORT' : p[3] }
@@ -213,16 +204,14 @@ def p_scp_adjunct(p):
 		p[0] = { 'LOCAL_PATH' : p[3].strip() }
 	elif 4 == len(p) and 'SSH_HOST_PATH' == p[1]:
 		p[0] = { 'SSH_HOST_PATH' : p[3].strip() }
-	if 'LOCAL_INTF' in p[0] and not p[0]['LOCAL_INTF']:
-		raise Exception('LOCAL_INTF can not be empty in lineno:%d' % p.lineno(2))
+	# port
 	if 'LOCAL_PORT' in p[0] and (0 > p[0]['LOCAL_PORT'] or 65535 < p[0]['LOCAL_PORT']):
 		raise Exception('LOCAL_PORT not proper in lineno:%d' % p.lineno(2))
-	if 'LOCAL_USER' in p[0] and not p[0]['LOCAL_USER']:
-		raise Exception('LOCAL_USER can not be empty in lineno:%d' % p.lineno(2))
-	if 'LOCAL_PATH' in p[0] and not p[0]['LOCAL_PATH']:
-		raise Exception('LOCAL_PATH can not be empty in lineno:%d' % p.lineno(2))
-	if 'SSH_HOST_PATH' in p[0] and not p[0]['SSH_HOST_PATH']:
-		raise Exception('SSH_HOST_PATH can not be empty in lineno:%d' % p.lineno(2))
+	# should not empty
+	notEmptyItems = ['LOCAL_INTF', 'LOCAL_USER', 'LOCAL_PATH', 'SSH_HOST_PATH']
+	for item in notEmptyItems:
+		if item in p[0] and not p[0][item]:
+			raise Exception('%s can not be empty in lineno:%d' % (item, p.lineno(2)))
 
 def p_cmd_add_user(p):
 	'''cmd : ADD_USER SEP add_user_adjs
@@ -292,11 +281,11 @@ def p_adjs(p):
 			raise Exception("NM and ASSERT can not be used at the same time")
 		if 'TL' in p[0].keys() and 'NTOL' in p[0].keys():
 			raise Exception("TL and NTOL can not be used at the same time")
-	#print "adjs:%r" % p[0]
 
 def p_adjunct(p):
 	'''adjunct : NTOL
 			   | NM
+			   | LOCAL_CMD
 			   | TAG SEP id_list
 			   | VAR SEP IDENTITY
 			   | SCP_PWD SEP STRING
@@ -307,6 +296,8 @@ def p_adjunct(p):
 		p[0] = { 'NTOL' : True }
 	elif 2 == len(p) and 'NM' == p[1]:
 		p[0] = { 'NM' : True }
+	elif 2 == len(p) and 0 == cmp('LOCAL_CMD', p[1]):
+		p[0] = { 'LOCAL_CMD' : True }
 	elif 4 == len(p) and 'TAG' == p[1]:
 		p[0] = { 'TAG' : p[3] }
 	elif 4 == len(p) and 'VAR' == p[1]:
@@ -318,7 +309,10 @@ def p_adjunct(p):
 	elif 4 == len(p) and 'ASSERT' == p[1] and isinstance(p[3], int):
 		p[0] = { 'ASSERT' : str(p[3]) }
 	elif 4 == len(p) and 'TL' == p[1]:
+		if p[3] < 1:
+			raise Exception("integer set for TL should not less than 1 in lineno:%d would never be executed" % p.lineno(2))
 		p[0] = { 'TL' : p[3] }
+
 	
 
 def p_id_list(p):
@@ -575,11 +569,9 @@ def parseCmdsFromData(data):
 		if str(e).startswith("Illegalal token"):
 			return {'code':-3001, 'msg':str(e)} 
 		else:
+			#exstr = traceback.format_exc()
+			#print exstr
 			return {'code':-3002, 'msg':str(e)} 
-		#elif str(e).startswith("parsing error"):
-		#	return {'code':-3002, 'msg':str(e)} 
-		#else:
-		#	return {'code':-3003, 'msg':'unknown error:%s' % str(e)}
 	
 
 

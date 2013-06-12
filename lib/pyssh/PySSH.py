@@ -61,7 +61,7 @@ try:
 		if RCP.has_option('pyssh', 'login_wait_timeout_sec'):
 			LOGIN_WAIT_TIMEOUT = RCP.getint('pyssh', 'login_wait_timeout_sec')
 		else:
-			LOGIN_WAIT_TIMEOUT = 30
+			LOGIN_WAIT_TIMEOUT = 20
 		if RCP.has_option('pyssh', 'pyssh_default_timeout'):
 			PYSSH_DEFAULT_TIMEOUT = RCP.getint('pyssh', 'pyssh_default_timeout')
 		else:
@@ -171,6 +171,36 @@ class PySSH:
 		commandOutput = self.exceptFirstLine( tStr )
 		return commandOutput
 
+
+	def execLocalCommand(self, command, commandExt=None, timeout=-1):
+		logger.info("hostName:%s, exec local command, parameter:command:%s, timeout:%r", self.hostName, command, timeout)
+		#deal parameter
+		if None is commandExt: commandExt = dict()
+		
+		tEvents = dict()
+		if 'SCP_PWD' in commandExt:
+			tEvents[ '(?i)password' ] = "%s" % commandExt['SCP_PWD']
+
+		# add \n to every item in events
+		for (k, v) in tEvents.items():
+			tEvents[ k ] = "%s\n" % v
+
+		try:
+			logger.debug('events:%r', tEvents)
+			tCommand = '/bin/sh -c "%s"' % command
+			(commandOutput, exitCode) = pexpect.run(command=tCommand, events=tEvents, timeout=timeout, withexitstatus=True)
+			logger.debug('hostName:%s, local command:%s, output:%r, exit:%d', self.hostName, command, commandOutput, exitCode)
+			if 0 != exitCode:
+				return {'code':-8001, 'output':commandOutput}
+			else:
+				return {'code':exitCode, 'output':commandOutput}
+		except:
+			logger.exception("hostName:%s, exec local command exception", self.hostName)
+			return {'code': -8002, 'output':'exception occurs'}
+
+
+
+
 	def execCommand(self, command, commandExt = None, timeout = -1):
 		"""
 		if the value of timeout is -1, then expect will use self.timeout
@@ -196,9 +226,9 @@ class PySSH:
 			if 'LOCAL_ISDIR' in commandExt:
 				tLocalIsDir = commandExt['LOCAL_ISDIR']
 			if 0 == cmp('pyssh_scp_local_pull_push', command):
-				return self.scpFromLocalPullPush(localPassword=tLocalPwd, localPath=commandExt['LOCAL_PATH'], sshHostPath=commandExt['SSH_HOST_PATH'], localIsdir=tLocalIsDir, localIntf=tLocalIntf, localPort=tLocalPort)
+				return self.scpFromLocalPullPush(localPassword=tLocalPwd, localPath=commandExt['LOCAL_PATH'], sshHostPath=commandExt['SSH_HOST_PATH'], localIsdir=tLocalIsDir, localIntf=tLocalIntf, localPort=tLocalPort, timeout=timeout)
 			elif 0 == cmp('pyssh_scp_local_push_pull', command):
-				return self.scpFromLocalPushPull(localPassword=tLocalPwd, localPath=commandExt['LOCAL_PATH'], sshHostPath=commandExt['SSH_HOST_PATH'], localIsdir=tLocalIsDir, localIntf=tLocalIntf, localPort=tLocalPort)
+				return self.scpFromLocalPushPull(localPassword=tLocalPwd, localPath=commandExt['LOCAL_PATH'], sshHostPath=commandExt['SSH_HOST_PATH'], localIsdir=tLocalIsDir, localIntf=tLocalIntf, localPort=tLocalPort, timeout=timeout)
 		elif 0 == cmp('pyssh_add_user', command):
 			tUserPassword = None
 			if 'USER_PWD' in commandExt:
@@ -216,7 +246,7 @@ class PySSH:
 				scpPassword = commandExt['SCP_PWD']
 			else:
 				scpPassword = None
-			return self.execScpCommand(scpCommand, scpPassword, timeout=SCP_WAIT_TIMEOUT)
+			return self.execScpCommand(scpCommand, scpPassword, timeout=timeout)
 		else:
 			self.sshClient.sendline(command)
 			#time.sleep(SLEEP_TIME_AFTER_SENDLINE)
@@ -241,7 +271,6 @@ class PySSH:
 						return {'code':0, 'output':commandOutput}
 					else:
 						logger.error('hostName:%s, exec command finished, but exit value is not 0, command:%s, output:%r', self.hostName, command, commandOutput)
-						#return {'code':-6009, 'output':'exec command fininshed, but its exit valus is not 0, command:%s, exit value:%r, reason:%r' % (command, exitRet['output'], commandOutput)}
 						return {'code':-6009, 'output':commandOutput}
 			elif i == 1:
 				logger.error("hostName:%s, execute command, EOF occur, then send control signal C", self.hostName)
@@ -347,7 +376,10 @@ class PySSH:
 
 
 
-	def scpPushFromLocal(self, scpCommand, validation=None, validationCommand='', timeout=SCP_WAIT_TIMEOUT):
+	def scpPushFromLocal(self, scpCommand, validation=None, validationCommand='', timeout=-1):
+		if -1 == timeout:
+			timeout = SCP_WAIT_TIMEOUT
+
 		logger.info('hostName:%s, scpPushFromLocal starts, scpCommand:%s, validation:%r, validationCommand:%s, timeout:%r' % (self.hostName, scpCommand, validation, validationCommand, timeout))
 	
 		child = pexpect.spawn( scpCommand )
@@ -546,7 +578,10 @@ class PySSH:
 		tResult = self.scpPullToSelfTest(sourceHostName=sourceHostName, sourceUser=sourceUser, sourcePassword=sourcePassword, sourceFile=sourceTempFilePath, sourcePort=sourcePort, destTempDir=destTempDir, validation=validation)
 		
 		### delete local temp file
-		os.remove( sourceTempFilePath )
+		try:
+			os.remove( sourceTempFilePath )
+		except:
+			pass
 
 		# set flag
 		if tResult:
@@ -623,7 +658,10 @@ class PySSH:
 			return {'code':-6005, 'output':'TIMEOUT occurs when getting pre command exit value'}
 
 
-	def execScpCommand(self, scpCommand, scpPassword = None, timeout = SCP_WAIT_TIMEOUT):
+	def execScpCommand(self, scpCommand, scpPassword = None, timeout = -1):
+		if -1 == timeout:
+			timeout = SCP_WAIT_TIMEOUT
+
 		logger.info("hostName:%s, exec scp command starts, parameter:scpCommand:%s, timeout:%r" % (self.hostName, scpCommand, timeout))
 
 		# clear output before exec command
@@ -935,7 +973,7 @@ class PySSH:
 
 
 
-	def scpFromLocalPull(self,  localPath, sshHostPath, localPassword=None, localIsdir=False, localIntf=None, localPort=None):
+	def scpFromLocalPull(self,  localPath, sshHostPath, localPassword=None, localIsdir=False, localIntf=None, localPort=None, timeout=-1):
 		if None is localIntf:
 			localIntf = LOCAL_INTERFACE
 		# get local user name
@@ -975,7 +1013,7 @@ class PySSH:
 				'localPath' : localPath,
 				'sshHostPath' : sshHostPath,
 			}
-			scpRet = self.execScpCommand(scpPullCommand, localPassword)
+			scpRet = self.execScpCommand(scpPullCommand, localPassword, timeout)
 			if 0 != scpRet['code']:
 				logger.error('hostName:%s, scp from local pull failed, command:%s, result:%r', self.hostName, scpPullCommand, scpRet)
 				return {'code':-5018, 'output':'scp pull from local failed, error code:%d, reason:%r' % (scpRet['code'], scpRet['output'])}
@@ -986,7 +1024,7 @@ class PySSH:
 			return {'code':-5019, 'output':'scp pull from local failed, can not pass test'}
 
 
-	def scpFromLocalPush(self,  localPath, sshHostPath, localIsdir=False):
+	def scpFromLocalPush(self,  localPath, sshHostPath, localIsdir=False, timeout=-1):
 		# test push from local
 		if True is self.scpPushFromLocalFlag or (None is self.scpPushFromLocalFlag and  self.scpPushFromLocalTest()):
 			# ssh port
@@ -1034,7 +1072,7 @@ class PySSH:
 				'sshHost' : self.hostName,
 				'sshHostPath' : tSPath,
 			}
-			scpRet = self.scpPushFromLocal(scpCommand=scpPushCommand)
+			scpRet = self.scpPushFromLocal(scpCommand=scpPushCommand, timeout=timeout)
 			if 0 != scpRet['code']:
 				logger.error('hostName:%s, scp from local push failed, command:%s, result:%r', self.hostName, scpPushCommand, scpRet)
 				return {'code':scpRet['code'], 'output':'scp push from local failed, reason:%r' % scpRet['output']}
@@ -1045,13 +1083,13 @@ class PySSH:
 			return {'code':-5020, 'output':'scp push from local failed, can not pass test'}
 			
 	
-	def scpFromLocalPullPush(self,  localPath, sshHostPath, localPassword=None, localIsdir=False, localIntf=None, localPort=None):
-		pullRet = self.scpFromLocalPull(localPath=localPath, sshHostPath=sshHostPath, localPassword=localPassword, localIsdir=localIsdir, localIntf=localIntf, localPort=localPort)
+	def scpFromLocalPullPush(self,  localPath, sshHostPath, localPassword=None, localIsdir=False, localIntf=None, localPort=None, timeout=-1):
+		pullRet = self.scpFromLocalPull(localPath=localPath, sshHostPath=sshHostPath, localPassword=localPassword, localIsdir=localIsdir, localIntf=localIntf, localPort=localPort, timeout=timeout)
 		if 0 == pullRet['code']:
 			return pullRet
 		else:
 			self.scpPullFromLocalFlag = False
-			pushRet = self.scpFromLocalPush(localPath=localPath, sshHostPath=sshHostPath, localIsdir=localIsdir)
+			pushRet = self.scpFromLocalPush(localPath=localPath, sshHostPath=sshHostPath, localIsdir=localIsdir, timeout=timeout)
 			if 0 == pushRet['code']:
 				return pushRet
 			else:
@@ -1059,13 +1097,13 @@ class PySSH:
 		logger.error('hostName:%s, SCP_LOCAL_PULL_PUSH both direction failed', self.hostName)
 		return {'code':-5017, 'output':'both direction failed'}
 
-	def scpFromLocalPushPull(self,  localPath, sshHostPath, localPassword=None, localIsdir=False, localIntf=None, localPort=None):
-		pushRet = self.scpFromLocalPush(localPath=localPath, sshHostPath=sshHostPath, localIsdir=localIsdir)
+	def scpFromLocalPushPull(self,  localPath, sshHostPath, localPassword=None, localIsdir=False, localIntf=None, localPort=None, timeout=-1):
+		pushRet = self.scpFromLocalPush(localPath=localPath, sshHostPath=sshHostPath, localIsdir=localIsdir, timeout=timeout)
 		if 0 == pushRet['code']:
 			return pushRet
 		else:
 			self.scpPushFromLocalFlag = False
-			pullRet = self.scpFromLocalPull(localPath=localPath, sshHostPath=sshHostPath, localPassword=localPassword, localIsdir=localIsdir, localIntf=localIntf, localPort=localPort)
+			pullRet = self.scpFromLocalPull(localPath=localPath, sshHostPath=sshHostPath, localPassword=localPassword, localIsdir=localIsdir, localIntf=localIntf, localPort=localPort, timeout=timeout)
 			if 0 == pullRet['code']:
 				return pullRet
 			else:

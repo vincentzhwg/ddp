@@ -14,7 +14,7 @@ logger = logging.getLogger( "pyssh" )
 SLEEP_TIME_AFTER_SENDLINE = 0.05
 SCP_TEST_TIMEOUT = 30
 SCP_WAIT_TIMEOUT = 1200
-LOGIN_WAIT_TIMEOUT = 120
+LOGIN_WAIT_TIMEOUT = 20
 PYSSH_DEFAULT_TIMEOUT = 30
 CONF_PATH = ""
 LOCAL_INTERFACE = 'eth0'
@@ -40,7 +40,7 @@ try:
 		if RCP.has_option('pyssh', 'login_wait_timeout_sec'):
 			LOGIN_WAIT_TIMEOUT = RCP.getint('pyssh', 'login_wait_timeout_sec')
 		else:
-			LOGIN_WAIT_TIMEOUT = 30
+			LOGIN_WAIT_TIMEOUT = 20
 		if RCP.has_option('pyssh', 'pyssh_default_timeout'):
 			PYSSH_DEFAULT_TIMEOUT = RCP.getint('pyssh', 'pyssh_default_timeout')
 		else:
