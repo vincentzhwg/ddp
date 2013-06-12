@@ -26,6 +26,7 @@ reserved = {
 	'TAG' : 'TAG',
 	'VAR' : 'VAR',
 	'NM' : 'NM',
+	'LOCAL_CMD' : 'LOCAL_CMD',
 	'ASSERT' : 'ASSERT',
 	'TL' : 'TL',
 	'SCP_PWD' : 'SCP_PWD',
