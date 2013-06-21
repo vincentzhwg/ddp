@@ -503,6 +503,10 @@ class SSHHost(threading.Thread):
 					self.resultQueue.put( {'host':self.host, 'firstCmdNode':self.firstCmdNode, 'type':-1, 'loginRet':loginRet} )
 					self.opLogList.append( ['@@@LOGIN FAILED@@@', 'login error code:%d' % loginRet['code'], 'reason:%r' % loginRet['output']] )
 					self.opLogQueue.put( {'host':self.host, 'opLogList':self.opLogList} )
+
+					# close pyssh
+					self.pysshAgent.close()
+
 					return 
 				else:
 					loginRetryCounter += 1
@@ -526,6 +530,10 @@ class SSHHost(threading.Thread):
 					self.resultQueue.put( {'host':self.host, 'firstCmdNode':self.firstCmdNode, 'type':-4, 'execRet':execRet} )
 					self.opLogList.append( ['!!!ERROR!!! exec [cd ~] command error when getting sshHomePath', 'error code:%d, reason:%r' % (execRet['code'], execRet['output'])] )
 					self.opLogQueue.put( {'host':self.host, 'opLogList':self.opLogList} )
+
+					# close pyssh
+					self.pysshAgent.close()
+
 					return 
 				else:
 					getHomePathRetryCounter += 1
@@ -538,6 +546,10 @@ class SSHHost(threading.Thread):
 						self.resultQueue.put( {'host':self.host, 'firstCmdNode':self.firstCmdNode, 'type':-4, 'execRet':execRet} )
 						self.opLogList.append( ['!!!ERROR!!! exec [pwd] command error when getting sshHomePath', 'error code:%d, reason:%r' % (execRet['code'], execRet['output'])] )
 						self.opLogQueue.put( {'host':self.host, 'opLogList':self.opLogList} )
+
+						# close pyssh
+						self.pysshAgent.close()
+
 						return 
 					else:
 						getHomePathRetryCounter += 1
@@ -582,6 +594,10 @@ class SSHHost(threading.Thread):
 					self.resultQueue.put( {'host':self.host, 'firstCmdNode':self.firstCmdNode, 'type':-3, 'errorCmdNode':curCmdNode, 'execRet':{'code':tCode, 'output':tMsg}} )
 					self.opLogList.append( {'cmdNode':curCmdNode, 'execRet':{'code':tCode, 'output':tMsg}} )
 					self.opLogQueue.put( {'host':self.host, 'opLogList':self.opLogList} )
+
+				# close pyssh
+				self.pysshAgent.close()
+
 				return 
 			elif 0 == cmp('cmd', curCmdNode.category):
 				if not self.isBelongsSelfCmdNode(curCmdNode):
@@ -600,6 +616,10 @@ class SSHHost(threading.Thread):
 						self.resultQueue.put( {'host':self.host, 'firstCmdNode':self.firstCmdNode, 'type':-2, 'errorCmdNode':curCmdNode, 'execRet':execRet} )
 						self.opLogList.append( {'cmdNode':curCmdNode, 'execRet':execRet} )
 						self.opLogQueue.put( {'host':self.host, 'opLogList':self.opLogList} )
+
+						# close pyssh
+						self.pysshAgent.close()
+
 						return
 					else:
 						retryCounter += 1
