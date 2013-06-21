@@ -513,6 +513,10 @@ class SSHHost(Process):
 					self.resultSender.send( {'host':self.host, 'type':-1, 'loginRet':loginRet} )
 					self.opLogList.append( ['@@@LOGIN FAILED@@@', 'login error code:%d' % loginRet['code'], 'reason:%r' % loginRet['output']] )
 					self.outputOP( {'host':self.host, 'opLogList':self.opLogList} )
+
+					# close
+					self.pysshAgent.close()
+
 					return 
 				else:
 					loginRetryCounter += 1
@@ -536,6 +540,10 @@ class SSHHost(Process):
 					self.resultSender.send( {'host':self.host, 'type':-4, 'execRet':execRet} )
 					self.opLogList.append( ['!!!ERROR!!! exec [cd ~] command error when getting sshHomePath', 'error code:%d, reason:%r' % (execRet['code'], execRet['output'])] )
 					self.outputOP( {'host':self.host, 'opLogList':self.opLogList} )
+
+					# close
+					self.pysshAgent.close()
+
 					return 
 				else:
 					getHomePathRetryCounter += 1
@@ -548,6 +556,10 @@ class SSHHost(Process):
 						self.resultSender.send( {'host':self.host, 'type':-4, 'execRet':execRet} )
 						self.opLogList.append( ['!!!ERROR!!! exec [pwd] command error when getting sshHomePath', 'error code:%d, reason:%r' % (execRet['code'], execRet['output'])] )
 						self.outputOP( {'host':self.host, 'opLogList':self.opLogList} )
+
+						# close
+						self.pysshAgent.close()
+
 						return 
 					else:
 						getHomePathRetryCounter += 1
@@ -593,6 +605,10 @@ class SSHHost(Process):
 					self.resultSender.send( {'host':self.host, 'type':-3, 'errorCmdNode':curCmdNode, 'execRet':{'code':tCode, 'output':tMsg}} )
 					self.opLogList.append( {'cmdNode':curCmdNode, 'execRet':{'code':tCode, 'output':tMsg}} )
 					self.outputOP( {'host':self.host, 'opLogList':self.opLogList} )
+
+				# close
+				self.pysshAgent.close()
+
 				return 
 			elif 0 == cmp('cmd', curCmdNode.category):
 				if not self.isBelongsSelfCmdNode(curCmdNode):
@@ -611,6 +627,10 @@ class SSHHost(Process):
 						self.resultSender.send( {'host':self.host, 'type':-2, 'errorCmdNode':curCmdNode, 'execRet':execRet} )
 						self.opLogList.append( {'cmdNode':curCmdNode, 'execRet':execRet} )
 						self.outputOP( {'host':self.host, 'opLogList':self.opLogList} )
+
+						# close
+						self.pysshAgent.close()
+
 						return
 					else:
 						retryCounter += 1
