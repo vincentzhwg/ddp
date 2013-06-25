@@ -938,7 +938,7 @@ def checkArgs(hostsFile=None, cmdsFile=None, output=None, onlyOutput=None, succe
 
 def argsDefine():
 	argsParser = argparse.ArgumentParser(prog="ddp", description = "ddp is a python ssh script")
-	argsParser.add_argument('-v', '--version', action='version', version='%(prog)s, author:vincentzhwg@gmail.com, version: 1.0.2')
+	argsParser.add_argument('-v', '--version', action='version', version='%(prog)s, author:vincentzhwg@gmail.com, version: 1.0.4')
 	argsParser.add_argument('-l', '--hostsFile', help="the path of hostsFile, this parameter can not used with hostsString at the same time")
 	argsParser.add_argument('-s', '--hostsString', help="hosts string, this parameter can not used with hostsFile at the same time")
 	argsParser.add_argument('-c', '--cmdsFile', help="the path of cmdsFile, this parameter can not used with execCmds at the same time")
