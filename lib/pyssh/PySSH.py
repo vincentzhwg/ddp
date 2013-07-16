@@ -433,16 +433,23 @@ class PySSH:
 			PySSHUtil.pexpectClearOutputBuffer(child)
 			return self.scpPushFromLocal(scpCommand=scpCommand, validation=validation, validationCommand=validationCommand, timeout=timeout)
 		elif i == 3:
-			if validation is None or validation is False:
-				return {'code':0, 'output':'scp push from local success, but no validation'}
-			else:
-				logger.info("hostName:%s, scp push from local pass first step, wait to validation" % self.hostName)
-				tRet = self.execCommand(validationCommand)
-				logger.info("hostName:%s, scp push from local validation ret:%r", self.hostName, tRet)
-				if 0 == tRet['code']:
-					return {'code':0, 'output':'scp push from local success and pass validation'}
+			childOutput = child.before
+			child.close()	# close child, then can get exit code from child.exitstatus
+			logger.info("hostName:%s, scp push from local executed completely, exit status:%d", self.hostName, child.exitstatus)
+			childReturnCode = child.exitstatus
+			if 0 == childReturnCode:
+				if validation is None or validation is False:
+					return {'code':0, 'output':'scp push from local success, but no validation'}
 				else:
-					return {'code':-5015, 'output':'scp push from local failed, can not pass validation, reason:%s' % tRet['output']}
+					logger.info("hostName:%s, scp push from local pass first step, wait to validation" % self.hostName)
+					tRet = self.execCommand(validationCommand)
+					logger.info("hostName:%s, scp push from local validation ret:%r", self.hostName, tRet)
+					if 0 == tRet['code']:
+						return {'code':0, 'output':'scp push from local success and pass validation'}
+					else:
+						return {'code':-5015, 'output':'scp push from local failed, can not pass validation, reason:%r' % tRet['output']}
+			else:
+				return {'code':-5022, 'output':'scp push from local failed, reason:%r' % childOutput}
 		elif i == 4:
 			logger.warn("hostName:%s, scp push from local failed, timeout[%r] occurs, then send control signal C", self.hostName, timeout)
 			child.sendcontrol('c')

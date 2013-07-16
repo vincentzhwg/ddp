@@ -143,7 +143,7 @@ class PrintProcess(Process):
 				if 0 == cmp('exit', tCmdNode.category):
 					if 0 == tExecRet['code']:
 						print "exit: %d" % tCmdNode.value
-						if 0 != cmp('', tExecRet['msg']):
+						if 0 != cmp('', tExecRet['output']):
 							print "exit msg:\n%s" % stripCommandOutput( tExecRet['output'] )
 					else:
 						print "msg: !!!ERROR!!! error when exec EXIT command, error code:%d, reason:%r" % (tExecRet['code'], tExecRet['output'])
@@ -1001,7 +1001,7 @@ def checkArgs(hostsFile=None, cmdsFile=None, output=None, onlyOutput=None, succe
 
 def argsDefine():
 	argsParser = argparse.ArgumentParser(prog="ddp", description = "ddp is a python ssh script")
-	argsParser.add_argument('-v', '--version', action='version', version='%(prog)s, author:vincentzhwg@gmail.com, version: 1.1.4')
+	argsParser.add_argument('-v', '--version', action='version', version='%(prog)s, author:vincentzhwg@gmail.com, version: 1.1.5')
 	argsParser.add_argument('-l', '--hostsFile', help="the path of hostsFile, this parameter can not used with hostsString at the same time")
 	argsParser.add_argument('-s', '--hostsString', help="hosts string, this parameter can not used with hostsFile at the same time")
 	argsParser.add_argument('-c', '--cmdsFile', help="the path of cmdsFile, this parameter can not used with execCmds at the same time")
@@ -1312,7 +1312,8 @@ if __name__ == '__main__':
 	except:
 		#logger.exception("occurs exception when parsing args, exit 1")
 		retDict = {'code':-1001, 'msg':'parameters can not be recognized', 'hosts':dict()}
-		sys.exit( json.dumps(retDict) )
+		#sys.exit( json.dumps(retDict) )
+		sys.exit( 1 )
 		
 	#print "args:%r" % args
 	#sys.exit(1)
