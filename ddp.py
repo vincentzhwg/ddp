@@ -4,13 +4,13 @@
 # author: vinczhang
 
 import sys, os
-import platform
 import logging, logging.config
 import warnings
 import re
 import ConfigParser
 import json
 import copy
+from datetime import datetime
 from multiprocessing import Process, Pipe, Value
 
 
@@ -78,6 +78,8 @@ except:
 DDP_PRINT_PIPE_RECEIVER, DDP_PRINT_PIPE_SENDER = Pipe(duplex=False)
 DDP_OPLOG_PIPE_RECEIVER, DDP_OPLOG_PIPE_SENDER = Pipe(duplex=False)
 DDP_RESULT_PIPE_RECEIVER, DDP_RESULT_PIPE_SENDER = Pipe(duplex=False)
+## 
+WAITING_PIPE_RECEIVER, WAITING_PIPE_SENDER = Pipe(duplex=False)
 
 
 #################################################################################################################
@@ -327,13 +329,28 @@ class OPLogProcess(Process):
 		self.closeOutputFile()
 		self.closeOnlyOutputFile()
 
+####################################################################################################################
+class ExecProcess(Process):
+	def __init__(self):
+		Process.__init__(self)
+
+		self.receiver = WAITING_PIPE_RECEIVER
+
+	def run(self):
+		while self.receiver.poll():
+			try:
+				sshHostParas = self.receiver.recv()
+				sshHost = SSHHost(host=sshHostParas['host'], firstCmdNode=sshHostParas['firstCmdNode'], retryTimes=sshHostParas['retryTimes'], cmdVars=sshHostParas['cmdVars'], quietMode=sshHostParas['quietMode'], outputFileQuietMode=sshHostParas['outputFileQuietMode'])
+				sshHost.run()
+			except EOFError:
+				break
+
+
 
 
 #####################################################################################################################
-class SSHHost(Process):
+class SSHHost:
 	def __init__(self, host, firstCmdNode, cmdVars=None, retryTimes=None, quietMode=False, outputFileQuietMode=True):
-		Process.__init__(self)
-		
 		self.host = copy.deepcopy( host )
 		if not 'port' in self.host: self.host['port'] = None
 		if not 'password' in self.host: self.host['password'] = None
@@ -343,7 +360,7 @@ class SSHHost(Process):
 		self.quietMode = quietMode
 		self.outputFileQuietMode = outputFileQuietMode
 
-		#set process name
+		#set name
 		self.name = host['hostName']
 
 		self.printSender = DDP_PRINT_PIPE_SENDER
@@ -379,7 +396,7 @@ class SSHHost(Process):
 		else: self.retryTimes = retryTimes		# retry times after error
 		self.retry = list()					# retry error info
 
-		logger.debug('processName:%s, init SSHHost, hostName:%s, user:%s, port:%r, cmdVars:%r', self.name, self.host['hostName'], self.host['user'], self.host['port'], self.cmdVars)
+		logger.debug('sshHost:%s, init SSHHost, hostName:%s, user:%s, port:%r, cmdVars:%r', self.name, self.host['hostName'], self.host['user'], self.host['port'], self.cmdVars)
 
 
 
@@ -390,7 +407,7 @@ class SSHHost(Process):
 			1 : exec faild, but NM (no matter)
 			< 0 : failed
 		'''
-		logger.debug("processName:%s, exec cmdNode:%s, cmdVars:%r", self.name, cmdNode, self.cmdVars)
+		logger.debug("sshHost:%s, exec cmdNode:%s, cmdVars:%r", self.name, cmdNode, self.cmdVars)
 		if 'TL' in cmdNode.adjs:
 			if cmdNode.adjs['TL'] > 0:
 				tTimeout = cmdNode.adjs['TL']
@@ -437,11 +454,11 @@ class SSHHost(Process):
 		if 0 != execRet['code']:
 			# failed
 			if 'NM' in realAdjs and realAdjs['NM'] is True:
-				logger.warning('processName:%s, command:%s, execRet:%r', self.name, realCommand, execRet)
+				logger.warning('sshHost:%s, command:%s, execRet:%r', self.name, realCommand, execRet)
 				retDict['code'] = 1
 				retDict['output'] = execRet['output']
 			else:
-				logger.error('processName:%s, command:%s, execRet:%r', self.name, realCommand, execRet)
+				logger.error('sshHost:%s, command:%s, execRet:%r', self.name, realCommand, execRet)
 				retDict['code'] = execRet['code']
 				retDict['output'] = execRet['output']
 		else:
@@ -450,17 +467,17 @@ class SSHHost(Process):
 				self.cmdVars[ realAdjs['VAR'] ] = execRet['output'].strip()
 			if 'ASSERT' in realAdjs:
 				if 0 == cmp(realAdjs['ASSERT'], execRet['output'].strip()):
-					logger.debug('processName:%s, command:%s, execRet:%r', self.name, realCommand, execRet)
+					logger.debug('sshHost:%s, command:%s, execRet:%r', self.name, realCommand, execRet)
 					# assert success
 					retDict['code'] = execRet['code']
 					retDict['output'] = execRet['output']
 				else:
-					logger.error('processName:%s, command:%s, execRet:%r', self.name, realCommand, execRet)
+					logger.error('sshHost:%s, command:%s, execRet:%r', self.name, realCommand, execRet)
 					# assert failed
 					retDict['code'] = -7007
 					retDict['output'] = "ASSERT failed, assert:%s, output:%r" % (realAdjs['ASSERT'], execRet['output'].strip())
 			else:
-				logger.debug('processName:%s, command:%s, execRet:%r', self.name, realCommand, execRet)
+				logger.debug('sshHost:%s, command:%s, execRet:%r', self.name, realCommand, execRet)
 				retDict['code'] = execRet['code']
 				retDict['output'] = execRet['output']
 		return retDict
@@ -499,7 +516,7 @@ class SSHHost(Process):
 			-3 : exec EXIT command failed
 			-4 : error when getting sshHomePath
 		'''
-		logger.info('process start:%s', self.name)
+		logger.info('sshHost start:%s', self.name)
 
 		loginRetryCounter = 0
 		# login
@@ -508,7 +525,7 @@ class SSHHost(Process):
 			loginRet = self.pysshAgent.login()
 			if 0 != loginRet['code']:
 				if loginRetryCounter >= DDP_LOGIN_RETRY_TIMES:
-					logger.error('processName:%s, login error, login ret:%r', self.name, loginRet)
+					logger.error('sshHost:%s, login error, login ret:%r', self.name, loginRet)
 					self.printOP( ['host: %s' % self.host['hostName'], 'msg: @@@LOGIN FAILED@@@ reason:%r' % loginRet['output']] )
 					self.resultSender.send( {'host':self.host, 'type':-1, 'loginRet':loginRet} )
 					self.opLogList.append( ['@@@LOGIN FAILED@@@', 'login error code:%d' % loginRet['code'], 'reason:%r' % loginRet['output']] )
@@ -520,12 +537,12 @@ class SSHHost(Process):
 					return 
 				else:
 					loginRetryCounter += 1
-					logger.warning('processName:%s, login failed, login result:%r, but retry again, retryTimes:%d, retryCounter:%d', self.name, loginRet, DDP_LOGIN_RETRY_TIMES, loginRetryCounter)
+					logger.warning('sshHost:%s, login failed, login result:%r, but retry again, retryTimes:%d, retryCounter:%d', self.name, loginRet, DDP_LOGIN_RETRY_TIMES, loginRetryCounter)
 					#self.printOP( ['host: %s' % self.host['hostName'], 'msg: login failed, login result:%r, but retry again, retryTimes:%d, retryCounter:%d' % (loginRet, DDP_LOGIN_RETRY_TIMES, loginRetryCounter), ] )
 					self.opLogList.append( ['@@@LOGIN FAILED@@@', 'login error code:%d' % loginRet['code'], 'reason:%r' % loginRet['output'], 'msg: retry again, retryTimes:%d, retryCounter:%d' % (DDP_LOGIN_RETRY_TIMES, loginRetryCounter)] )
 					continue
 			else:
-				logger.info('processName:%s, login success, loginRet:%r', self.name, loginRet)
+				logger.info('sshHost:%s, login success, loginRet:%r', self.name, loginRet)
 				self.printOP( ['host: %s' % self.host['hostName'], 'msg: login success'] )
 				self.opLogList.append( ['msg: login success',] )
 				break
@@ -536,7 +553,7 @@ class SSHHost(Process):
 			execRet = self.pysshAgent.execCommand( "cd ~" )
 			if 0 != execRet['code']:
 				if getHomePathRetryCounter >= DDP_SSHHOMEPATH_RETRY_TIMES:
-					logger.error('processName:%s, exec [cd ~] command error when getting sshHomePath error, ret:%r', self.name, execRet)
+					logger.error('sshHost:%s, exec [cd ~] command error when getting sshHomePath error, ret:%r', self.name, execRet)
 					self.resultSender.send( {'host':self.host, 'type':-4, 'execRet':execRet} )
 					self.opLogList.append( ['!!!ERROR!!! exec [cd ~] command error when getting sshHomePath', 'error code:%d, reason:%r' % (execRet['code'], execRet['output'])] )
 					self.outputOP( {'host':self.host, 'opLogList':self.opLogList} )
@@ -552,7 +569,7 @@ class SSHHost(Process):
 				execRet = self.pysshAgent.execCommand( "pwd" )
 				if 0 != execRet['code']:
 					if getHomePathRetryCounter >= DDP_SSHHOMEPATH_RETRY_TIMES:
-						logger.error('processName:%s, exec [pwd] command error when getting sshHomePath error, ret:%r', self.name, execRet)
+						logger.error('sshHost:%s, exec [pwd] command error when getting sshHomePath error, ret:%r', self.name, execRet)
 						self.resultSender.send( {'host':self.host, 'type':-4, 'execRet':execRet} )
 						self.opLogList.append( ['!!!ERROR!!! exec [pwd] command error when getting sshHomePath', 'error code:%d, reason:%r' % (execRet['code'], execRet['output'])] )
 						self.outputOP( {'host':self.host, 'opLogList':self.opLogList} )
@@ -566,7 +583,7 @@ class SSHHost(Process):
 						continue
 				else:
 					self.cmdVars[ 'sshHomePath' ] = execRet['output'].strip()
-					logger.info('processName:%s, get sshHomePath success:%s', self.name, self.cmdVars['sshHomePath'])
+					logger.info('sshHost:%s, get sshHomePath success:%s', self.name, self.cmdVars['sshHomePath'])
 					break
 
 
@@ -594,13 +611,13 @@ class SSHHost(Process):
 						tMsg = '%s is not a define variable' % item[0]
 						break
 				if tCode == 0:
-					logger.info('processName:%s, meet EXIT command, exit value:%d, msg:%r', self.name, curCmdNode.value, realExitMsg)
+					logger.info('sshHost:%s, meet EXIT command, exit value:%d, msg:%r', self.name, curCmdNode.value, realExitMsg)
 					self.printOP( {'host':self.host, 'cmdNode':curCmdNode, 'execRet':{'code':0, 'output':realExitMsg},} )
 					self.resultSender.send( {'host':self.host, 'type':1, 'exit':curCmdNode.value, 'msg':realExitMsg} )
 					self.opLogList.append( {'cmdNode':curCmdNode, 'execRet':{'code':0, 'output':realExitMsg}} )
 					self.outputOP( {'host':self.host, 'opLogList':self.opLogList} )
 				else:
-					logger.error('processName:%s, meet EXIT command error, error code:%d, reason:%s', self.name, tCode, tMsg)
+					logger.error('sshHost:%s, meet EXIT command error, error code:%d, reason:%s', self.name, tCode, tMsg)
 					self.printOP( ['host: %s' % self.host['hostName'], 'msg: !!!ERROR!!!, EXIT command error, error code:%d, reason:%s' % (tCode, tMsg), ] )
 					self.resultSender.send( {'host':self.host, 'type':-3, 'errorCmdNode':curCmdNode, 'execRet':{'code':tCode, 'output':tMsg}} )
 					self.opLogList.append( {'cmdNode':curCmdNode, 'execRet':{'code':tCode, 'output':tMsg}} )
@@ -612,18 +629,18 @@ class SSHHost(Process):
 				return 
 			elif 0 == cmp('cmd', curCmdNode.category):
 				if not self.isBelongsSelfCmdNode(curCmdNode):
-					logger.debug('processName:%s, this CmdNode not bellongs self, continue, curCmdNode:%s', self.name, curCmdNode)
+					logger.debug('sshHost:%s, this CmdNode not bellongs self, continue, curCmdNode:%s', self.name, curCmdNode)
 					curCmdNode = curCmdNode.child
 					continue
 				execRet = self.execCmdNode(curCmdNode)
 				self.printOP( {'host':self.host, 'cmdNode':curCmdNode, 'execRet':execRet} )
 				if execRet['code'] >= 0:
-					logger.info('processName:%s, command:%s, result code:%d, output:%r', self.name, execRet['realCommand'], execRet['code'], execRet['output'])
+					logger.info('sshHost:%s, command:%s, result code:%d, output:%r', self.name, execRet['realCommand'], execRet['code'], execRet['output'])
 					self.opLogList.append( {'cmdNode':curCmdNode, 'execRet':execRet} )
 					curCmdNode = curCmdNode.child
 				else:
 					if retryCounter >= self.retryTimes:
-						logger.error('processName:%s, command:%s, result code:%d, output:%r', self.name, execRet['realCommand'], execRet['code'], execRet['output'])
+						logger.error('sshHost:%s, command:%s, result code:%d, output:%r', self.name, execRet['realCommand'], execRet['code'], execRet['output'])
 						self.resultSender.send( {'host':self.host, 'type':-2, 'errorCmdNode':curCmdNode, 'execRet':execRet} )
 						self.opLogList.append( {'cmdNode':curCmdNode, 'execRet':execRet} )
 						self.outputOP( {'host':self.host, 'opLogList':self.opLogList} )
@@ -634,7 +651,7 @@ class SSHHost(Process):
 						return
 					else:
 						retryCounter += 1
-						logger.warning('processName:%s, exec command failed, command:%s, code:%d, reason:%r, but retry again, retryTimes:%d, retryCounter:%d', self.name, execRet['realCommand'], execRet['code'], execRet['output'], self.retryTimes, retryCounter)
+						logger.warning('sshHost:%s, exec command failed, command:%s, code:%d, reason:%r, but retry again, retryTimes:%d, retryCounter:%d', self.name, execRet['realCommand'], execRet['code'], execRet['output'], self.retryTimes, retryCounter)
 						self.retry.append( 'retryTimes:%d, retryCounter:%d, exec command failed, command:%s, error code:%d, reason:%r' % (self.retryTimes, retryCounter, execRet['realCommand'], execRet['code'], execRet['output']) )
 						self.printOP( ['host: %s' % self.host['hostName'], 'command: %s' % execRet['realCommand'], 'output:\n%s' % stripCommandOutput(execRet['output']), 'msg: exec command failed, but retry again, retryTimes:%d, retryCounter:%d' % (self.retryTimes, retryCounter), ] )
 						self.opLogList.append( ['command: %s' % execRet['realCommand'], 'output:\n%s' % stripCommandOutput(execRet['output']), 'msg: retry again, retryTimes:%d, retryCounter:%d' % (self.retryTimes, retryCounter)] )
@@ -642,48 +659,48 @@ class SSHHost(Process):
 						continue
 			elif 0 == cmp('if', curCmdNode.category):
 				if not self.isBelongsSelfCmdNode(curCmdNode.condition):
-					logger.debug('processName:%s, this CmdNode not bellongs self, continue, curCmdNode:%s', self.name, curCmdNode)
+					logger.debug('sshHost:%s, this CmdNode not bellongs self, continue, curCmdNode:%s', self.name, curCmdNode)
 					curCmdNode = curCmdNode.junction
 					continue
 				execRet = self.execCmdNode( curCmdNode.condition )
 				self.printOP( {'host':self.host, 'cmdNode':curCmdNode, 'execRet':execRet} )
 				self.opLogList.append( {'cmdNode':curCmdNode, 'execRet':execRet} )
 				if 0 == execRet['code']:
-					logger.info('processName:%s, command:%s, result code:%d, output:%r, following Y', self.name, execRet['realCommand'], execRet['code'], execRet['output'])
+					logger.info('sshHost:%s, command:%s, result code:%d, output:%r, following Y', self.name, execRet['realCommand'], execRet['code'], execRet['output'])
 					curCmdNode = curCmdNode.Y
 				else:
-					logger.info('processName:%s, command:%s, result code:%d, output:%r, following N', self.name, execRet['realCommand'], execRet['code'], execRet['output'])
+					logger.info('sshHost:%s, command:%s, result code:%d, output:%r, following N', self.name, execRet['realCommand'], execRet['code'], execRet['output'])
 					curCmdNode = curCmdNode.N
 			elif 0 == cmp('while', curCmdNode.category):
 				if not self.isBelongsSelfCmdNode(curCmdNode.condition):
-					logger.debug('processName:%s, this CmdNode not bellongs self, continue, curCmdNode:%s', self.name, curCmdNode)
+					logger.debug('sshHost:%s, this CmdNode not bellongs self, continue, curCmdNode:%s', self.name, curCmdNode)
 					curCmdNode = curCmdNode.N
 					continue
 				execRet = self.execCmdNode( curCmdNode.condition )
 				self.printOP( {'host':self.host, 'cmdNode':curCmdNode, 'execRet':execRet} )
 				self.opLogList.append( {'cmdNode':curCmdNode, 'execRet':execRet} )
 				if 0 == execRet['code']:
-					logger.info('processName:%s, command:%s, result code:%d, output:%r, following Y', self.name, execRet['realCommand'], execRet['code'], execRet['output'])
+					logger.info('sshHost:%s, command:%s, result code:%d, output:%r, following Y', self.name, execRet['realCommand'], execRet['code'], execRet['output'])
 					curCmdNode = curCmdNode.Y
 				else:
-					logger.info('processName:%s, command:%s, result code:%d, output:%r, following N', self.name, execRet['realCommand'], execRet['code'], execRet['output'])
+					logger.info('sshHost:%s, command:%s, result code:%d, output:%r, following N', self.name, execRet['realCommand'], execRet['code'], execRet['output'])
 					curCmdNode = curCmdNode.N
 			elif 0 == cmp('do_while', curCmdNode.category):
 				if not self.isBelongsSelfCmdNode(curCmdNode.condition):
-					logger.debug('processName:%s, this CmdNode not bellongs self, continue, curCmdNode:%s', self.name, curCmdNode)
+					logger.debug('sshHost:%s, this CmdNode not bellongs self, continue, curCmdNode:%s', self.name, curCmdNode)
 					curCmdNode = curCmdNode.N
 					continue
 				execRet = self.execCmdNode( curCmdNode.condition )
 				self.printOP( {'host':self.host, 'cmdNode':curCmdNode, 'execRet':execRet} )
 				self.opLogList.append( {'cmdNode':curCmdNode, 'execRet':execRet} )
 				if 0 == execRet['code']:
-					logger.info('processName:%s, command:%s, result code:%d, output:%r, following Y', self.name, execRet['realCommand'], execRet['code'], execRet['output'])
+					logger.info('sshHost:%s, command:%s, result code:%d, output:%r, following Y', self.name, execRet['realCommand'], execRet['code'], execRet['output'])
 					curCmdNode = curCmdNode.Y
 				else:
-					logger.info('processName:%s, command:%s, result code:%d, output:%r, following N', self.name, execRet['realCommand'], execRet['code'], execRet['output'])
+					logger.info('sshHost:%s, command:%s, result code:%d, output:%r, following N', self.name, execRet['realCommand'], execRet['code'], execRet['output'])
 					curCmdNode = curCmdNode.N
 		# exec all cmds, and no meet with EXIT command
-		logger.info('processName:%s, fininsh all cmds and no meet with EXIT command', self.name)
+		logger.info('sshHost:%s, fininsh all cmds and no meet with EXIT command', self.name)
 		self.printOP( ['hosts: %s' % self.host['hostName'], 'msg: success, finish all cmds, and no meet with EXIT command'] )
 		self.resultSender.send( {'host':self.host, 'type':0} )
 		self.opLogList.append( ['finish all cmds, and no meet with EXIT command'] )
@@ -692,7 +709,7 @@ class SSHHost(Process):
 		# close pyssh
 		self.pysshAgent.close()
 
-		logger.info('process finished:%s', self.name)
+		logger.info('sshHost finished:%s', self.name)
 		
 
 
@@ -1001,7 +1018,7 @@ def checkArgs(hostsFile=None, cmdsFile=None, output=None, onlyOutput=None, succe
 
 def argsDefine():
 	argsParser = argparse.ArgumentParser(prog="ddp", description = "ddp is a python ssh script")
-	argsParser.add_argument('-v', '--version', action='version', version='%(prog)s, author:vincentzhwg@gmail.com, version: 1.1.5')
+	argsParser.add_argument('-v', '--version', action='version', version='%(prog)s, author:vincentzhwg@gmail.com, version: 1.1.6')
 	argsParser.add_argument('-l', '--hostsFile', help="the path of hostsFile, this parameter can not used with hostsString at the same time")
 	argsParser.add_argument('-s', '--hostsString', help="hosts string, this parameter can not used with hostsFile at the same time")
 	argsParser.add_argument('-c', '--cmdsFile', help="the path of cmdsFile, this parameter can not used with execCmds at the same time")
@@ -1009,7 +1026,7 @@ def argsDefine():
 	argsParser.add_argument('-eh', '--errorHostsFile', help="the path of error hosts file")
 	argsParser.add_argument('-sh', '--successHostsFile', help="the path of success hosts file")
 	argsParser.add_argument('-r', '--retryTimes', type=int, help="retry times after error")
-	argsParser.add_argument('-w', '--workersNO', type=int, help="number of concurrent running hosts. less than or equal 1 means serial execution; greater than 1 means concurrent execution")
+	argsParser.add_argument('-w', '--workersNO', type=int, help="number of concurrent running hosts")
 	argsParser.add_argument('-q', '--quiet', action='store_true', help="quiet mode, no std output")
 	argsParser.add_argument('-qq', '--quietFiles', action='store_true', help="not generate successHostsFile and errorHostsFile")
 	argsParser.add_argument('-j', '--jsonFormat', action='store_true', help="return result as json string")
@@ -1026,20 +1043,31 @@ def ddpRun(hostList, firstCmdNode, retryTimes=None, workersNO=None, cmdVars=None
 	if None is retryTimes: retryTimes = DDP_RETRY_TIMES
 	if None is workersNO: workersNO = DDP_RUNNING_HOST
 
-	sshHostProcesses = list()
-	for tHost in hostList:
-		sshHostProcesses.append( SSHHost(host=tHost, firstCmdNode=firstCmdNode, retryTimes=retryTimes, cmdVars=cmdVars, quietMode=quietMode, outputFileQuietMode=outputFileQuietMode) )
-	
 	# running 
-	if workersNO > 1:
-		for p in sshHostProcesses:
-			p.start()
-		for p in sshHostProcesses:
-			p.join()
+	if workersNO < 1: workersNO = 1
+	
+	processList = list()
+	if workersNO < len(hostList):
+		for tHost in hostList:
+			sshHostParas = {'host':tHost, 'firstCmdNode':firstCmdNode, 'retryTimes':retryTimes, 'cmdVars':cmdVars, 'quietMode':quietMode, 'outputFileQuietMode':outputFileQuietMode}
+
+			WAITING_PIPE_SENDER.send( sshHostParas )
+		for i in range(0, workersNO):
+			processList.append( ExecProcess() )
+		## close WAITING_PIPE_SENDER
+		WAITING_PIPE_SENDER.close()
 	else:
-		for tP in sshHostProcesses:
-			tP.start()
-			tP.join()
+		for tHost in hostList:
+			sshHost = SSHHost(host=tHost, firstCmdNode=firstCmdNode, retryTimes=retryTimes, cmdVars=cmdVars, quietMode=quietMode, outputFileQuietMode=outputFileQuietMode)
+			processList.append( Process( target=sshHost.run, name=tHost['hostName'] ) )
+		
+
+	## run and join
+	for p in processList:
+		p.start()
+	for p in processList:
+		p.join()
+
 	
 
 
@@ -1073,6 +1101,8 @@ def ddp(hostList, firstCmdNode, output=None, onlyOutput=None, retryTimes=None, w
 			print retDict
 		return retDict
 
+	### record time to calc time consumption
+	startTime = datetime.now()
 
 	# start print worker if not in quiet mode
 	if not quiet:
@@ -1110,6 +1140,11 @@ def ddp(hostList, firstCmdNode, output=None, onlyOutput=None, retryTimes=None, w
 		opLogWorker.turnOff()
 		opLogWorker.join()
 	
+	### record time to calc time consumption
+	endTime = datetime.now()
+	durationTime = endTime - startTime
+	logger.info('ddp execution time consumption:%fs, start time:%s, end time:%s', (86400 * durationTime.days + durationTime.seconds + 0.000001 * durationTime.microseconds), startTime.strftime('%Y-%m-%d %H:%M:%S,%f'), endTime.strftime('%Y-%m-%d %H:%M:%S,%f'));
+
 	
 	retDict = DDP_RESULT_PIPE_RECEIVER.recv()
 	if jsonFormat:
@@ -1228,7 +1263,8 @@ def main(hostsFile=None, cmdsFile=None, hostsString=None, execCmds=None, output=
 		logger.info("get cmds from cmds file [%s] success, cmds are following:%s", cmdsFile, firstCmdNode.depthTraversal())
 
 
-
+	### record time to calc time consumption
+	startTime = datetime.now()
 
 
 	# start print worker if not in quiet mode
@@ -1267,7 +1303,11 @@ def main(hostsFile=None, cmdsFile=None, hostsString=None, execCmds=None, output=
 		opLogWorker.turnOff()
 		opLogWorker.join()
 	
-	
+	### record time to calc time consumption
+	endTime = datetime.now()
+	durationTime = endTime - startTime
+	logger.info('ddp execution time consumption:%fs, start time:%s, end time:%s', (86400 * durationTime.days + durationTime.seconds + 0.000001 * durationTime.microseconds), startTime.strftime('%Y-%m-%d %H:%M:%S,%f'), endTime.strftime('%Y-%m-%d %H:%M:%S,%f'));
+
 
 	retDict = DDP_RESULT_PIPE_RECEIVER.recv()
 	totalCode = retDict['code']

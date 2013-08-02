@@ -165,8 +165,13 @@ class PySSH:
 	def getCommandOutput(self, originOutput):
 		# originOutput often is self.sshClient.before
 
+		#logger.debug('originOutput:%r', originOutput)
 		# filter scp timeout output after sigint signal
 		tStr = re.sub(r'warning:.*Connection Timed Out\r\r\n', '', originOutput)
+		#logger.debug('after filter scp warning, output:%r', tStr)
+		tStr = re.sub(r'nohup: ignoring input and appending output to(.*?)\r\n', '', tStr)
+		#logger.debug('after filter nohup output, output:%r', tStr)
+
 
 		commandOutput = self.exceptFirstLine( tStr )
 		return commandOutput
@@ -255,11 +260,11 @@ class PySSH:
 			if i == 0:
 				commandOutput = self.getCommandOutput( self.sshClient.before )
 
-				if command.startswith('nohup') and self.sshClient.buffer:
-					logger.info('hostName:%s, command starts with nohup, buffer:%r', self.hostName, self.sshClient.buffer)
-					commandOutput = "%s%s" % (commandOutput, self.sshClient.buffer)
-					#self.sshClient.buffer = ''
-					self.clearOutputBuffer()
+				#if command.startswith('nohup') and self.sshClient.buffer:
+				#	logger.info('hostName:%s, command starts with nohup, buffer:%r', self.hostName, self.sshClient.buffer)
+				#	commandOutput = "%s%s" % (commandOutput, self.sshClient.buffer)
+				#	#self.sshClient.buffer = ''
+				#	self.clearOutputBuffer()
 
 				exitRet = self.getPreCommandExitValue()
 				if 0 != exitRet['code']:
@@ -642,8 +647,12 @@ class PySSH:
 		logger.debug("hostName:%(hostName)s, command:%(command)s, expect['%(prompt)s', pexpect.EOF, pexpect.TIMEOUT], timeout=%(timeout)r, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'command':'echo $?', 'prompt':self.prompt, 'timeout':5, 'index':qqT, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
 		if 0 == qqT:
 			tBf = self.sshClient.before
+
 			# filter scp timeout output after sigint signal
 			tBf = re.sub(r'warning:.*Connection Timed Out\r\r\n', '', tBf)
+			# filter nohup 
+			tBf = re.sub(r'nohup: ignoring input and appending output to(.*?)\r\n', '', tBf)
+
 			tOp = self.exceptFirstLine(tBf).strip()
 			try:
 				tOpInt = int(tOp)
