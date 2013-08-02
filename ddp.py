@@ -865,15 +865,15 @@ def dealResultQueue(cmdsData=None, quietFiles=False, successHostsFile=None, erro
 	return retDict
 
 
-def setGlobalVar(retryTimes=None, threadsNO=None, successHostsFile=None, errorHostsFile=None):
+def setGlobalVar(retryTimes=None, workersNO=None, successHostsFile=None, errorHostsFile=None):
 	global DDP_RUNNING_HOST
 	global DDP_RETRY_TIMES
 	global DDP_SUCCESS_HOSTS_FILE
 	global DDP_ERROR_HOSTS_FILE
 
-	if not None is threadsNO:
-		if threadsNO < 1: DDP_RUNNING_HOST = 1
-		else: DDP_RUNNING_HOST = threadsNO
+	if not None is workersNO:
+		if workersNO < 1: DDP_RUNNING_HOST = 1
+		else: DDP_RUNNING_HOST = workersNO
 	if not None is retryTimes:
 		if retryTimes < 0: DDP_RETRY_TIMES = 0
 		else: DDP_RETRY_TIMES = retryTimes
@@ -975,7 +975,7 @@ def argsDefine():
 	argsParser.add_argument('-eh', '--errorHostsFile', help="the path of error hosts file")
 	argsParser.add_argument('-sh', '--successHostsFile', help="the path of success hosts file")
 	argsParser.add_argument('-r', '--retryTimes', type=int, help="retry times after error")
-	argsParser.add_argument('-t', '--threadsNO', type=int, help="number of concurrent threads")
+	argsParser.add_argument('-w', '--workersNO', type=int, help="number of concurrent running hosts")
 	argsParser.add_argument('-q', '--quiet', action='store_true', help="quiet mode, no std output")
 	argsParser.add_argument('-qq', '--quietFiles', action='store_true', help="not generate successHostsFile and errorHostsFile")
 	argsParser.add_argument('-j', '--jsonFormat', action='store_true', help="return result as json string")
@@ -986,23 +986,23 @@ def argsDefine():
 
 
 
-def ddpRun(hostList, firstCmdNode, retryTimes=None, threadsNO=None, cmdVars=None):
+def ddpRun(hostList, firstCmdNode, retryTimes=None, workersNO=None, cmdVars=None):
 	# deal parameters
 	if None is cmdVars: cmdVars = dict()
 	if None is retryTimes: retryTimes = DDP_RETRY_TIMES
-	if None is threadsNO: threadsNO = DDP_RUNNING_HOST
+	if None is workersNO: workersNO = DDP_RUNNING_HOST
 
 	
 	# running 
-	if threadsNO < 1: threadsNO = 1
+	if workersNO < 1: workersNO = 1
 
 	threadList = list()
-	if threadsNO < len(hostList):
+	if workersNO < len(hostList):
 		waitingQueue = Queue.Queue( len(hostList) )
 		for tHost in hostList:
 			sshHost = SSHHost(host=tHost, firstCmdNode=firstCmdNode, retryTimes=retryTimes, cmdVars=cmdVars)
 			waitingQueue.put( sshHost )
-		for i in range(0, threadsNO):
+		for i in range(0, workersNO):
 			threadList.append( ExecThread( waitingQueue ) )
 	else:
 		for tHost in hostList:
@@ -1019,9 +1019,9 @@ def ddpRun(hostList, firstCmdNode, retryTimes=None, threadsNO=None, cmdVars=None
 
 
 
-def ddp(hostList, firstCmdNode, output=None, onlyOutput=None, retryTimes=None, threadsNO=None, quiet=False, jsonFormat=False, quietFiles=False, printResult=False, successHostsFile=None, errorHostsFile=None):
+def ddp(hostList, firstCmdNode, output=None, onlyOutput=None, retryTimes=None, workersNO=None, quiet=False, jsonFormat=False, quietFiles=False, printResult=False, successHostsFile=None, errorHostsFile=None):
 	# set global var by args
-	setGlobalVar(retryTimes=retryTimes, threadsNO=threadsNO, successHostsFile=successHostsFile, errorHostsFile=errorHostsFile)
+	setGlobalVar(retryTimes=retryTimes, workersNO=workersNO, successHostsFile=successHostsFile, errorHostsFile=errorHostsFile)
 	logger.info("conf parameter final values:")
 	logger.info("DDP_EXIT_USELESS_VALUE:%d", DDP_EXIT_USELESS_VALUE)
 	logger.info("DDP_RUNNING_HOST:%d", DDP_RUNNING_HOST)
@@ -1032,7 +1032,7 @@ def ddp(hostList, firstCmdNode, output=None, onlyOutput=None, retryTimes=None, t
 
 	# deal parameters
 	if None is retryTimes: retryTimes = DDP_RETRY_TIMES
-	if None is threadsNO: threadsNO = DDP_RUNNING_HOST
+	if None is workersNO: workersNO = DDP_RUNNING_HOST
 	if None is successHostsFile: successHostsFile = DDP_SUCCESS_HOSTS_FILE
 	if None is errorHostsFile: errorHostsFile = DDP_ERROR_HOSTS_FILE
 	
@@ -1062,7 +1062,7 @@ def ddp(hostList, firstCmdNode, output=None, onlyOutput=None, retryTimes=None, t
 		logger.info("start opLog thread")
 
 	# execute ssh command
-	ddpRun(hostList, firstCmdNode, retryTimes=retryTimes, threadsNO=threadsNO)
+	ddpRun(hostList, firstCmdNode, retryTimes=retryTimes, workersNO=workersNO)
 	
 	# deal resultQueue
 	retDict = dealResultQueue(quietFiles=quietFiles, successHostsFile=successHostsFile, errorHostsFile=errorHostsFile)
@@ -1093,10 +1093,10 @@ def ddp(hostList, firstCmdNode, output=None, onlyOutput=None, retryTimes=None, t
 
 
 
-def main(hostsFile=None, cmdsFile=None, hostsString=None, execCmds=None, output=None, onlyOutput=None, retryTimes=None, threadsNO=None, quiet=False, jsonFormat=False, quietFiles=False, printResult=False, successHostsFile=None, errorHostsFile=None):
+def main(hostsFile=None, cmdsFile=None, hostsString=None, execCmds=None, output=None, onlyOutput=None, retryTimes=None, workersNO=None, quiet=False, jsonFormat=False, quietFiles=False, printResult=False, successHostsFile=None, errorHostsFile=None):
 
 	# set global var by args
-	setGlobalVar(retryTimes=retryTimes, threadsNO=threadsNO, successHostsFile=successHostsFile, errorHostsFile=errorHostsFile)
+	setGlobalVar(retryTimes=retryTimes, workersNO=workersNO, successHostsFile=successHostsFile, errorHostsFile=errorHostsFile)
 	logger.info("conf parameter final values:")
 	logger.info("DDP_EXIT_USELESS_VALUE:%d", DDP_EXIT_USELESS_VALUE)
 	logger.info("DDP_RUNNING_HOST:%d", DDP_RUNNING_HOST)
@@ -1107,7 +1107,7 @@ def main(hostsFile=None, cmdsFile=None, hostsString=None, execCmds=None, output=
 
 	# deal parameters
 	if None is retryTimes: retryTimes = DDP_RETRY_TIMES
-	if None is threadsNO: threadsNO = DDP_RUNNING_HOST
+	if None is workersNO: workersNO = DDP_RUNNING_HOST
 	if None is successHostsFile: successHostsFile = DDP_SUCCESS_HOSTS_FILE
 	if None is errorHostsFile: errorHostsFile = DDP_ERROR_HOSTS_FILE
 	
@@ -1213,7 +1213,7 @@ def main(hostsFile=None, cmdsFile=None, hostsString=None, execCmds=None, output=
 		logger.info("start opLog thread")
 
 	# execute ssh command
-	ddpRun(hostList, firstCmdNode, retryTimes=retryTimes, threadsNO=threadsNO)
+	ddpRun(hostList, firstCmdNode, retryTimes=retryTimes, workersNO=workersNO)
 	
 	# deal resultQueue
 	retDict = dealResultQueue(cmdsData=cmdsData, quietFiles=quietFiles, successHostsFile=successHostsFile, errorHostsFile=errorHostsFile)
@@ -1283,4 +1283,4 @@ if __name__ == '__main__':
 	#print "args:%r" % args
 	#sys.exit(1)
 	
-	main(hostsFile=args.hostsFile, cmdsFile=args.cmdsFile, hostsString=args.hostsString, execCmds=args.execCmds, output=args.output, onlyOutput=args.onlyOutput, quiet=args.quiet, quietFiles=args.quietFiles, retryTimes=args.retryTimes, threadsNO=args.threadsNO, jsonFormat=args.jsonFormat, printResult=args.printResult, successHostsFile=args.successHostsFile, errorHostsFile=args.errorHostsFile)
+	main(hostsFile=args.hostsFile, cmdsFile=args.cmdsFile, hostsString=args.hostsString, execCmds=args.execCmds, output=args.output, onlyOutput=args.onlyOutput, quiet=args.quiet, quietFiles=args.quietFiles, retryTimes=args.retryTimes, workersNO=args.workersNO, jsonFormat=args.jsonFormat, printResult=args.printResult, successHostsFile=args.successHostsFile, errorHostsFile=args.errorHostsFile)
