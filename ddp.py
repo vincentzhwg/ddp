@@ -11,7 +11,7 @@ import ConfigParser
 import json
 import copy
 from datetime import datetime
-from multiprocessing import Process, Pipe, Value
+from multiprocessing import Process, Pipe, Value, Pool
 
 
 libPath = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'lib')
@@ -330,21 +330,22 @@ class OPLogProcess(Process):
 		self.closeOnlyOutputFile()
 
 ####################################################################################################################
-class ExecProcess(Process):
-	def __init__(self):
-		Process.__init__(self)
-
-		self.receiver = WAITING_PIPE_RECEIVER
-
-	def run(self):
-		while self.receiver.poll():
-			try:
-				sshHostParas = self.receiver.recv()
-				sshHost = SSHHost(host=sshHostParas['host'], firstCmdNode=sshHostParas['firstCmdNode'], retryTimes=sshHostParas['retryTimes'], cmdVars=sshHostParas['cmdVars'], quietMode=sshHostParas['quietMode'], outputFileQuietMode=sshHostParas['outputFileQuietMode'])
-				sshHost.run()
-			except EOFError:
-				break
-
+### not used
+#class ExecProcess(Process):
+#	def __init__(self):
+#		Process.__init__(self)
+#
+#		self.receiver = WAITING_PIPE_RECEIVER
+#
+#	def run(self):
+#		while self.receiver.poll():
+#			try:
+#				sshHostParas = self.receiver.recv()
+#				sshHost = SSHHost(host=sshHostParas['host'], firstCmdNode=sshHostParas['firstCmdNode'], retryTimes=sshHostParas['retryTimes'], cmdVars=sshHostParas['cmdVars'], quietMode=sshHostParas['quietMode'], outputFileQuietMode=sshHostParas['outputFileQuietMode'])
+#				sshHost.run()
+#			except EOFError:
+#				break
+#
 
 
 
@@ -1036,6 +1037,11 @@ def argsDefine():
 	return argsParser
 
 
+### 封装一层之后就可用于 pool.apply_async , 不会出 PicklingError 错误，原因有待深究
+def sshHostWrap(host, firstCmdNode, cmdVars, retryTimes, quietMode, outputFileQuietMode):
+	sshHost = SSHHost(host=host, firstCmdNode=firstCmdNode, retryTimes=retryTimes, cmdVars=cmdVars, quietMode=quietMode, outputFileQuietMode=outputFileQuietMode)
+	sshHost.run()
+
 
 def ddpRun(hostList, firstCmdNode, retryTimes=None, workersNO=None, cmdVars=None, quietMode=False, outputFileQuietMode=True):
 	# deal parameters
@@ -1048,14 +1054,12 @@ def ddpRun(hostList, firstCmdNode, retryTimes=None, workersNO=None, cmdVars=None
 	
 	processList = list()
 	if workersNO < len(hostList):
+		workersPool = Pool(processes = workersNO)
 		for tHost in hostList:
-			sshHostParas = {'host':tHost, 'firstCmdNode':firstCmdNode, 'retryTimes':retryTimes, 'cmdVars':cmdVars, 'quietMode':quietMode, 'outputFileQuietMode':outputFileQuietMode}
-
-			WAITING_PIPE_SENDER.send( sshHostParas )
-		for i in range(0, workersNO):
-			processList.append( ExecProcess() )
-		## close WAITING_PIPE_SENDER
-		WAITING_PIPE_SENDER.close()
+			workersPool.apply_async(func=sshHostWrap, kwds={'host':tHost, 'firstCmdNode':firstCmdNode, 'cmdVars':cmdVars, 'retryTimes':retryTimes, 'quietMode':quietMode, 'outputFileQuietMode':outputFileQuietMode})
+		### 
+		workersPool.close()
+		workersPool.join()
 	else:
 		for tHost in hostList:
 			sshHost = SSHHost(host=tHost, firstCmdNode=firstCmdNode, retryTimes=retryTimes, cmdVars=cmdVars, quietMode=quietMode, outputFileQuietMode=outputFileQuietMode)
