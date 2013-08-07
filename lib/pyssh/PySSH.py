@@ -29,6 +29,32 @@ os.environ['PYSSH_ROOT_DIR'] = PYSSH_ROOT_DIR
 #logging.config.fileConfig( loggingConfigFile )
 logger = logging.getLogger( "pyssh" )
 
+###########################################
+FILTER_SPECIAL_CHARACTERS_LIST = [
+	'warning:(.*?)Connection Timed Out\\r\\r\\n',						# filter scp timeout output after sigint signal
+	'nohup: ignoring input and appending output to(.*?)\\r\\n',		# filter nohup 
+	'\\x1b\\[Ke',
+	'\\x08',
+	'\\x1b\\[m',
+	'\\x1b\\[24m',
+	'\\x1b\\[Kc',
+	'\\x1b\\[2K',				#ESC_CLEAR_LINE
+	'\\x1b\\[2J',				#ESC_CLEAR_SCREEN
+	'\\x1b\\[1;1H',				#ESC_HOME_CURSOR
+	'\\x1bc',					#ESC_RESET_TERMINAL
+	'\\x1b\\[7m',				#ESC_REVERSE_VIDEO_ON
+	'\\x1b\\[27m',				#ESC_REVERSE_VIDEO_OFF
+	'\\x1b\\[B',				#ESC_CURSOR_DOWN
+	'\\x1bM',					#ESC_SCROLL_UP
+	'\\x1bD',					#ESC_SCROLL_DOWN
+	'\\x1b\\[K',				#ESC_ERASE_LINE
+	'\\x1b\\[J',				#ESC_ERASE_DOWN
+	'\\x1b\\[1J',				#ESC_ERASE_UP
+	'\\x1b\\[34m',				#ESC_GFX_BLUE_FG
+	'\\x1b\\[0m',				#ESC_GFX_OFF
+]
+FILTER_SPECIAL_CHARACTERS_RE_OBJ = re.compile( '|'.join(FILTER_SPECIAL_CHARACTERS_LIST) )
+###########################################
 
 
 SLEEP_TIME_AFTER_SENDLINE = 0.05
@@ -164,35 +190,17 @@ class PySSH:
 
 	### 把输出中特殊的字符或多余的输出过滤掉
 	def filterSpecialStringForOutput(self, output):
-		specialStringList = [
-			'warning:(.*?)Connection Timed Out\\r\\r\\n',						# filter scp timeout output after sigint signal
-			'nohup: ignoring input and appending output to(.*?)\\r\\n',		# filter nohup 
-			'\\x1b\\[Ke',
-			'\\x08',
-			'\\x1b\\[m',
-			'\\x1b\\[24m',
-			'\\x1b\\[Kc',
-			'\\x1b\\[2K',				#ESC_CLEAR_LINE
-			'\\x1b\\[2J',				#ESC_CLEAR_SCREEN
-			'\\x1b\\[1;1H',				#ESC_HOME_CURSOR
-			'\\x1bc',					#ESC_RESET_TERMINAL
-			'\\x1b\\[7m',				#ESC_REVERSE_VIDEO_ON
-			'\\x1b\\[27m',				#ESC_REVERSE_VIDEO_OFF
-			'\\x1b\\[B',				#ESC_CURSOR_DOWN
-			'\\x1bM',					#ESC_SCROLL_UP
-			'\\x1bD',					#ESC_SCROLL_DOWN
-			'\\x1b\\[K',				#ESC_ERASE_LINE
-			'\\x1b\\[J',				#ESC_ERASE_DOWN
-			'\\x1b\\[1J',				#ESC_ERASE_UP
-			'\\x1b\\[34m',				#ESC_GFX_BLUE_FG
-			'\\x1b\\[0m',				#ESC_GFX_OFF
-		]
 		tempStr = output
-		for item in specialStringList:
-			#logger.debug('FFF filter:%r, before:%r', item, tempStr)
-			tempStr = re.sub(item, '', tempStr)
-			#logger.debug('FFF after:%r', tempStr)
+
+		tempStr = re.sub(FILTER_SPECIAL_CHARACTERS_RE_OBJ, '', tempStr)
+
+		#for item in specialStringList:
+		#	#logger.debug('FFF filter:%r, before:%r', item, tempStr)
+		#	tempStr = re.sub(item, '', tempStr)
+		#	#logger.debug('FFF after:%r', tempStr)
+
 		#logger.debug('hostName:%s, before filtering special strings, origin:%r, after filtering, result:%r', self.hostName, output, tempStr)
+
 		return tempStr
 
 

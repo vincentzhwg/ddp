@@ -555,7 +555,7 @@ class SSHHost:
 			if 0 != execRet['code']:
 				if getHomePathRetryCounter >= DDP_SSHHOMEPATH_RETRY_TIMES:
 					logger.error('sshHost:%s, exec [cd ~] command error when getting sshHomePath error, ret:%r', self.name, execRet)
-					self.printOP( ['!!!ERROR!!! exec [cd ~] command error when getting sshHomePath', 'error code:%d, reason:%r' % (execRet['code'], execRet['output'])] )
+					self.printOP( ['host: %s' % self.host['hostName'], 'msg: !!!ERROR!!! exec [cd ~] command error when getting sshHomePath', 'error code:%d, reason:%r' % (execRet['code'], execRet['output'])] )
 					self.resultSender.send( {'host':self.host, 'type':-4, 'execRet':execRet} )
 					self.opLogList.append( ['!!!ERROR!!! exec [cd ~] command error when getting sshHomePath', 'error code:%d, reason:%r' % (execRet['code'], execRet['output'])] )
 					self.outputOP( {'host':self.host, 'opLogList':self.opLogList} )
@@ -572,7 +572,7 @@ class SSHHost:
 				if 0 != execRet['code']:
 					if getHomePathRetryCounter >= DDP_SSHHOMEPATH_RETRY_TIMES:
 						logger.error('sshHost:%s, exec [pwd] command error when getting sshHomePath error, ret:%r', self.name, execRet)
-						self.printOP( ['!!!ERROR!!! exec [pwd] command error when getting sshHomePath', 'error code:%d, reason:%r' % (execRet['code'], execRet['output'])] )
+						self.printOP( ['host: %s' % self.host['hostName'], 'msg: !!!ERROR!!! exec [pwd] command error when getting sshHomePath', 'error code:%d, reason:%r' % (execRet['code'], execRet['output'])] )
 						self.resultSender.send( {'host':self.host, 'type':-4, 'execRet':execRet} )
 						self.opLogList.append( ['!!!ERROR!!! exec [pwd] command error when getting sshHomePath', 'error code:%d, reason:%r' % (execRet['code'], execRet['output'])] )
 						self.outputOP( {'host':self.host, 'opLogList':self.opLogList} )
@@ -720,7 +720,7 @@ class SSHHost:
 ##################################################################################################################
 
 class ResultProcess(Process):
-	def __init__(self, cmdsData=None, quietFiles=False, successHostsFile=None, errorHostsFile=None):
+	def __init__(self, cmdsData=None, quietFiles=False, successHostsFile=None, errorHostsFile=None, hostList=None):
 		Process.__init__(self)
 		
 		self.receiver = DDP_RESULT_PIPE_RECEIVER
@@ -738,6 +738,9 @@ class ResultProcess(Process):
 
 		self.quietFiles = quietFiles
 		self.cmdsData = cmdsData
+
+		if hostList is not None: self.hostList = copy.deepcopy(hostList)
+		else: self.hostList = None
 
 		self.switchFlag = Value('i', 1)
 
@@ -882,6 +885,7 @@ class ResultProcess(Process):
 		# stat infos
 		tStrList = list()
 		tStrList.append("FININSHED ALL HOSTS, STATISTICS INFO")
+		if self.hostList is not None: tStrList.append("total host count: %d" % len(self.hostList))
 		tStrList.append("success and no meet with EXIT command host's counter: %d" % resultStatDict['success'][0])
 		tStrList.append("success, terminal because of EXIT command host's counter: %d" % resultStatDict['success'][1])
 		tStrList.append("error, login failed host's counter: %d" % resultStatDict['error'][-1])
@@ -1127,7 +1131,7 @@ def ddp(hostList, firstCmdNode, output=None, onlyOutput=None, retryTimes=None, w
 		logger.info("start opLog worker")
 		
 	# start result worker 
-	resultWorker = ResultProcess(quietFiles=quietFiles, successHostsFile=successHostsFile, errorHostsFile=errorHostsFile)
+	resultWorker = ResultProcess(quietFiles=quietFiles, successHostsFile=successHostsFile, errorHostsFile=errorHostsFile, hostList=hostList)
 	logger.info("start result worker")
 	resultWorker.start()
 
@@ -1291,7 +1295,7 @@ def main(hostsFile=None, cmdsFile=None, hostsString=None, execCmds=None, output=
 
 
 	# start result worker
-	resultWorker = ResultProcess(cmdsData=cmdsData, quietFiles=quietFiles, successHostsFile=successHostsFile, errorHostsFile=errorHostsFile)
+	resultWorker = ResultProcess(cmdsData=cmdsData, quietFiles=quietFiles, successHostsFile=successHostsFile, errorHostsFile=errorHostsFile, hostList=hostList)
 	resultWorker.start()
 
 	# execute ssh command
