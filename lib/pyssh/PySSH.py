@@ -31,7 +31,6 @@ logger = logging.getLogger( "pyssh" )
 
 
 
-
 SLEEP_TIME_AFTER_SENDLINE = 0.05
 SCP_TEST_TIMEOUT = 20
 SCP_WAIT_TIMEOUT = 1200
@@ -162,16 +161,53 @@ class PySSH:
 		except:
 			logger.exception("hostName:%s, occurs exception when closing", self.hostName)
 
+
+	### 把输出中特殊的字符或多余的输出过滤掉
+	def filterSpecialStringForOutput(self, output):
+		specialStringList = [
+			'warning:(.*?)Connection Timed Out\\r\\r\\n',						# filter scp timeout output after sigint signal
+			'nohup: ignoring input and appending output to(.*?)\\r\\n',		# filter nohup 
+			'\\x1b\\[Ke',
+			'\\x08',
+			'\\x1b\\[m',
+			'\\x1b\\[24m',
+			'\\x1b\\[Kc',
+			'\\x1b\\[2K',				#ESC_CLEAR_LINE
+			'\\x1b\\[2J',				#ESC_CLEAR_SCREEN
+			'\\x1b\\[1;1H',				#ESC_HOME_CURSOR
+			'\\x1bc',					#ESC_RESET_TERMINAL
+			'\\x1b\\[7m',				#ESC_REVERSE_VIDEO_ON
+			'\\x1b\\[27m',				#ESC_REVERSE_VIDEO_OFF
+			'\\x1b\\[B',				#ESC_CURSOR_DOWN
+			'\\x1bM',					#ESC_SCROLL_UP
+			'\\x1bD',					#ESC_SCROLL_DOWN
+			'\\x1b\\[K',				#ESC_ERASE_LINE
+			'\\x1b\\[J',				#ESC_ERASE_DOWN
+			'\\x1b\\[1J',				#ESC_ERASE_UP
+			'\\x1b\\[34m',				#ESC_GFX_BLUE_FG
+			'\\x1b\\[0m',				#ESC_GFX_OFF
+		]
+		tempStr = output
+		for item in specialStringList:
+			#logger.debug('FFF filter:%r, before:%r', item, tempStr)
+			tempStr = re.sub(item, '', tempStr)
+			#logger.debug('FFF after:%r', tempStr)
+		#logger.debug('hostName:%s, before filtering special strings, origin:%r, after filtering, result:%r', self.hostName, output, tempStr)
+		return tempStr
+
+
 	def getCommandOutput(self, originOutput):
 		# originOutput often is self.sshClient.before
 
-		#logger.debug('originOutput:%r', originOutput)
-		# filter scp timeout output after sigint signal
-		tStr = re.sub(r'warning:.*Connection Timed Out\r\r\n', '', originOutput)
-		#logger.debug('after filter scp warning, output:%r', tStr)
-		tStr = re.sub(r'nohup: ignoring input and appending output to(.*?)\r\n', '', tStr)
-		#logger.debug('after filter nohup output, output:%r', tStr)
+		##logger.debug('originOutput:%r', originOutput)
+		## filter scp timeout output after sigint signal
+		#tStr = re.sub(r'warning:.*Connection Timed Out\r\r\n', '', originOutput)
+		##logger.debug('after filter scp warning, output:%r', tStr)
+		#tStr = re.sub(r'nohup: ignoring input and appending output to(.*?)\r\n', '', tStr)
+		##logger.debug('after filter nohup output, output:%r', tStr)
 
+		#filter special string for output
+		tStr = self.filterSpecialStringForOutput(originOutput)
 
 		commandOutput = self.exceptFirstLine( tStr )
 		return commandOutput
@@ -646,12 +682,12 @@ class PySSH:
 		qqT = self.sshClient.expect([self.prompt, pexpect.EOF, pexpect.TIMEOUT], timeout = 10)
 		logger.debug("hostName:%(hostName)s, command:%(command)s, expect['%(prompt)s', pexpect.EOF, pexpect.TIMEOUT], timeout=%(timeout)r, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'command':'echo $?', 'prompt':self.prompt, 'timeout':5, 'index':qqT, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
 		if 0 == qqT:
-			tBf = self.sshClient.before
+			#tBf = self.sshClient.before
+			#tBf = re.sub(r'warning:.*Connection Timed Out\r\r\n', '', tBf)
+			#tBf = re.sub(r'nohup: ignoring input and appending output to(.*?)\r\n', '', tBf)
 
-			# filter scp timeout output after sigint signal
-			tBf = re.sub(r'warning:.*Connection Timed Out\r\r\n', '', tBf)
-			# filter nohup 
-			tBf = re.sub(r'nohup: ignoring input and appending output to(.*?)\r\n', '', tBf)
+			#filter special string for output
+			tBf = self.filterSpecialStringForOutput(self.sshClient.before)
 
 			tOp = self.exceptFirstLine(tBf).strip()
 			try:
@@ -807,14 +843,11 @@ class PySSH:
 		time.sleep(0.5)
 		try:
 			self.sshClient.read_nonblocking(size=10000, timeout=1) # GAS: Clear out the cache
-			#self.sshClient.buffer = ""
-			#self.sshClient.after = ""
-			#self.sshClient.before = ""
 		except pexpect.TIMEOUT:
 			logger.debug("%s read_nonblocking timeout, go on doing following stepts" % self.hostName)
-			#self.sshClient.buffer = ""
-			#self.sshClient.after = ""
-			#self.sshClient.before = ""
+		#self.sshClient.buffer = ""
+		#self.sshClient.after = ""
+		#self.sshClient.before = ""
 
 
 	def getPrompt(self):
@@ -935,6 +968,7 @@ class PySSH:
 
 
 	def getPromptBySetPS1(self):
+		self.sshClient.sendintr()
 		self.clearOutputBuffer()
 		self.sshClient.sendline ("unset PROMPT_COMMAND")
 
@@ -943,6 +977,7 @@ class PySSH:
 		self.clearOutputBuffer()
 		self.sshClient.sendline()
 		i = self.sshClient.expect_exact([pexpect.TIMEOUT, '#PYSSH_VINC_PEXPECT# '], timeout=10)
+		logger.debug("hostName:%(hostName)s, after PS1='#PYSSH_VINC_PEXPECT# ' and clear output buffer, expect[pexpect.TIMEOUT, '#PYSSH_VINC_PEXPECT# '], timeout=%(timeout)d, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'timeout':10, 'index':i, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
 		self.clearOutputBuffer()
 		if 1 == i:
 			return '#PYSSH_VINC_PEXPECT# '
@@ -951,6 +986,7 @@ class PySSH:
 			self.clearOutputBuffer()
 			self.sshClient.sendline()
 			j = self.sshClient.expect_exact([pexpect.TIMEOUT, '#PYSSH_VINC_PEXPECT# '], timeout=10)
+			logger.debug("hostName:%(hostName)s, after set prompt='#PYSSH_VINC_PEXPECT# ' and clear output buffer, expect[pexpect.TIMEOUT, '#PYSSH_VINC_PEXPECT# '], timeout=%(timeout)d, index=%(index)d, before:%(before)r, after:%(after)r, buffer:%(buffer)r" % {'hostName':self.hostName, 'timeout':10, 'index':j, 'before':self.sshClient.before, 'after':self.sshClient.after, 'buffer':self.sshClient.buffer})
 			self.clearOutputBuffer()
 			if 1 == j:
 				return '#PYSSH_VINC_PEXPECT# '

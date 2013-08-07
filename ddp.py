@@ -555,6 +555,7 @@ class SSHHost:
 			if 0 != execRet['code']:
 				if getHomePathRetryCounter >= DDP_SSHHOMEPATH_RETRY_TIMES:
 					logger.error('sshHost:%s, exec [cd ~] command error when getting sshHomePath error, ret:%r', self.name, execRet)
+					self.printOP( ['!!!ERROR!!! exec [cd ~] command error when getting sshHomePath', 'error code:%d, reason:%r' % (execRet['code'], execRet['output'])] )
 					self.resultSender.send( {'host':self.host, 'type':-4, 'execRet':execRet} )
 					self.opLogList.append( ['!!!ERROR!!! exec [cd ~] command error when getting sshHomePath', 'error code:%d, reason:%r' % (execRet['code'], execRet['output'])] )
 					self.outputOP( {'host':self.host, 'opLogList':self.opLogList} )
@@ -571,6 +572,7 @@ class SSHHost:
 				if 0 != execRet['code']:
 					if getHomePathRetryCounter >= DDP_SSHHOMEPATH_RETRY_TIMES:
 						logger.error('sshHost:%s, exec [pwd] command error when getting sshHomePath error, ret:%r', self.name, execRet)
+						self.printOP( ['!!!ERROR!!! exec [pwd] command error when getting sshHomePath', 'error code:%d, reason:%r' % (execRet['code'], execRet['output'])] )
 						self.resultSender.send( {'host':self.host, 'type':-4, 'execRet':execRet} )
 						self.opLogList.append( ['!!!ERROR!!! exec [pwd] command error when getting sshHomePath', 'error code:%d, reason:%r' % (execRet['code'], execRet['output'])] )
 						self.outputOP( {'host':self.host, 'opLogList':self.opLogList} )
@@ -888,12 +890,17 @@ class ResultProcess(Process):
 		tStrList.append("error, get sshHomePath failed host's counter: %d" % resultStatDict['error'][-4])
 		if unknownCounter > 0:
 			tStrList.append("unknown result counter:%d" % unknownCounter)
+		
+		###
 		self.printSender.send( tStrList )
 		self.opLogSender.send( tStrList )
 
 		for tStr in tStrList:
 			self.writeSucc( '#%s' % tStr )
 			self.writeErr( '#%s' % tStr )
+
+		### log
+		logger.info( '; '.join(tStrList) )
 		
 		#close files
 		self.closeSucc()
@@ -1147,7 +1154,7 @@ def ddp(hostList, firstCmdNode, output=None, onlyOutput=None, retryTimes=None, w
 	### record time to calc time consumption
 	endTime = datetime.now()
 	durationTime = endTime - startTime
-	logger.info('ddp execution time consumption:%fs, start time:%s, end time:%s', (86400 * durationTime.days + durationTime.seconds + 0.000001 * durationTime.microseconds), startTime.strftime('%Y-%m-%d %H:%M:%S,%f'), endTime.strftime('%Y-%m-%d %H:%M:%S,%f'));
+	logger.info('ddp execution time consumption:%fs, hosts:%d, start time:%s, end time:%s', (86400 * durationTime.days + durationTime.seconds + 0.000001 * durationTime.microseconds), len(hostList), startTime.strftime('%Y-%m-%d %H:%M:%S,%f'), endTime.strftime('%Y-%m-%d %H:%M:%S,%f'));
 
 	
 	retDict = DDP_RESULT_PIPE_RECEIVER.recv()
@@ -1310,7 +1317,7 @@ def main(hostsFile=None, cmdsFile=None, hostsString=None, execCmds=None, output=
 	### record time to calc time consumption
 	endTime = datetime.now()
 	durationTime = endTime - startTime
-	logger.info('ddp execution time consumption:%fs, start time:%s, end time:%s', (86400 * durationTime.days + durationTime.seconds + 0.000001 * durationTime.microseconds), startTime.strftime('%Y-%m-%d %H:%M:%S,%f'), endTime.strftime('%Y-%m-%d %H:%M:%S,%f'));
+	logger.info('ddp execution time consumption:%fs, hosts:%d, start time:%s, end time:%s', (86400 * durationTime.days + durationTime.seconds + 0.000001 * durationTime.microseconds), len(hostList), startTime.strftime('%Y-%m-%d %H:%M:%S,%f'), endTime.strftime('%Y-%m-%d %H:%M:%S,%f'));
 
 
 	retDict = DDP_RESULT_PIPE_RECEIVER.recv()
